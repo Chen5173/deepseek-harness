@@ -7,6 +7,7 @@
 
 import type { z } from 'zod'
 import type { ApiProxy, HostFrame, MuxFrame } from '../api/index.ts'
+import { randomUuid } from './random-uuid.ts'
 import type { RequestPayload, ResponseValue, RpcMethodMap } from '../api/rpc-map.ts'
 import type { ClientRequest, ClientResponse, RpcMessage, RpcReceipt, RpcRequest, RpcResponse, ServerRequest } from '../api/rpc.ts'
 import { RpcId } from '../api/rpc.ts'
@@ -26,6 +27,7 @@ import {
   sessionListValueSchema,
   sessionModelsValueSchema,
   sessionPromptValueSchema,
+  sessionRefreshTitleValueSchema,
   sessionRenameValueSchema,
   sessionSearchValueSchema,
   sessionSelectModelValueSchema,
@@ -93,6 +95,7 @@ export interface IApiClient {
     models(payload: RequestPayload<'session.models'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.models'>>>
     selectModel(payload: RequestPayload<'session.selectModel'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.selectModel'>>>
     rename(payload: RequestPayload<'session.rename'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.rename'>>>
+    refreshTitle(payload: RequestPayload<'session.refreshTitle'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.refreshTitle'>>>
     fork(payload: RequestPayload<'session.fork'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.fork'>>>
     prompt(payload: RequestPayload<'session.prompt'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.prompt'>>>
     attachment(payload: RequestPayload<'session.attachment'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.attachment'>>>
@@ -177,6 +180,7 @@ const UNARY_VALUE_SCHEMAS: { [K in keyof RpcMethodMap]: z.ZodType<Wire<ResponseV
   'session.models': sessionModelsValueSchema,
   'session.selectModel': sessionSelectModelValueSchema,
   'session.rename': sessionRenameValueSchema,
+  'session.refreshTitle': sessionRefreshTitleValueSchema,
   'session.fork': sessionForkValueSchema,
   'session.prompt': sessionPromptValueSchema,
   'session.attachment': sessionAttachmentValueSchema,
@@ -296,8 +300,9 @@ export abstract class AbstractApiClient implements IApiClient {
   }
 
   protected mintRpcId(): RpcId {
-    // crypto.randomUUID is a Web API (browser + Node ≥19): keeps this base platform-neutral.
-    return RpcId(crypto.randomUUID())
+    // Secure contexts offer crypto.randomUUID; insecure HTTP origins (a phone
+    // on the LAN) fall back to crypto.getRandomValues in randomUuid.
+    return RpcId(randomUuid())
   }
 
   /**
@@ -417,6 +422,7 @@ export abstract class AbstractApiClient implements IApiClient {
     models: (payload, signal) => this.callUnary('session.models', payload, signal),
     selectModel: (payload, signal) => this.callUnary('session.selectModel', payload, signal),
     rename: (payload, signal) => this.callUnary('session.rename', payload, signal),
+    refreshTitle: (payload, signal) => this.callUnary('session.refreshTitle', payload, signal),
     fork: (payload, signal) => this.callUnary('session.fork', payload, signal),
     prompt: (payload, signal) => this.callUnary('session.prompt', payload, signal),
     attachment: (payload, signal) => this.callUnary('session.attachment', payload, signal),

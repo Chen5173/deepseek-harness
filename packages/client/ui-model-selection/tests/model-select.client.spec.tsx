@@ -64,7 +64,7 @@ describe('ModelSelect reasoning effort', () => {
     />)
 
     const trigger = screen.getByRole('button', {
-      name: '选择模型，当前 DeepSeek-V4-Flash，推理等级 High',
+      name: '选择模型，当前 DeepSeek-V4-Flash，供应商 official，推理等级 High',
     })
     fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
@@ -78,7 +78,7 @@ describe('ModelSelect reasoning effort', () => {
         model: 'deepseek-v4-flash',
         reasoningEffort: 'max',
       })
-      expect(trigger.getAttribute('aria-label')).toBe('选择模型，当前 DeepSeek-V4-Flash，推理等级 Max')
+      expect(trigger.getAttribute('aria-label')).toBe('选择模型，当前 DeepSeek-V4-Flash，供应商 official，推理等级 Max')
     })
   })
 
@@ -105,7 +105,7 @@ describe('ModelSelect reasoning effort', () => {
     />)
 
     fireEvent.click(screen.getByRole('button', {
-      name: '选择模型，当前 Model，推理等级 Default',
+      name: '选择模型，当前 Model，供应商 Provider，推理等级 Default',
     }))
     fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
     expect(screen.getAllByRole('menuitemradio').map(item => item.textContent))
@@ -180,5 +180,35 @@ describe('ModelSelect reasoning effort', () => {
 
     expect(screen.queryByRole('button')).toBeNull()
     expect(load).not.toHaveBeenCalled()
+  })
+
+  it('labels the official DeepSeek route as official and third-party providers by name', () => {
+    const renderSeat = (directory: ModelDirectoryState): HTMLElement => {
+      render(<ModelSelect
+        locked={false}
+        available
+        directory={createSnapshotStore(directory)}
+        load={vi.fn()}
+        select={vi.fn().mockResolvedValue(true)}
+        t={t}
+      />)
+      return screen.getByRole('button', { name: /选择模型，当前/ })
+    }
+    try {
+      const official = renderSeat(state())
+      expect(official.textContent).toContain('DeepSeek-V4-Flash')
+      expect(official.textContent).toContain('official')
+    } finally {
+      cleanup()
+    }
+    const thirdParty = renderSeat(state({
+      groups: [{
+        id: 'volcengine-ark',
+        name: 'Volcengine ARK',
+        models: [{ id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' }],
+      }],
+      current: { provider: 'volcengine-ark', model: 'deepseek-v4-pro' },
+    }))
+    expect(thirdParty.textContent).toContain('Volcengine ARK.DeepSeek-V4-Pro')
   })
 })

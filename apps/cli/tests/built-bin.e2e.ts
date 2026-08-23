@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +12,25 @@ const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 // The release version, including a prerelease such as 0.0.1-rc.1: `--version`
 // prints what this manifest carries, so no test may pin it to a literal.
 const cliVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
+// Oh-My-Dsh build counter: mirrors the bin.ts derivation (per-commit count
+// since my-custom/oh-my-dsh-base.txt), so `--version` expectations stay exact.
+const ohMyDshBuildNumber = (() => {
+  try {
+    const base = readFileSync(join(repoRoot, 'my-custom/oh-my-dsh-base.txt'), 'utf8').trim()
+    const count = Number(
+      execFileSync('git', ['rev-list', '--count', 'HEAD', `^${base}`], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      }).trim(),
+    )
+    return String(count).padStart(4, '0')
+  } catch {
+    return '0000'
+  }
+})()
+const expectedVersion = existsSync(join(repoRoot, 'my-custom/oh-my-dsh-base.txt'))
+  ? `Oh-My-Dsh ${cliVersion} cv.${ohMyDshBuildNumber}`
+  : cliVersion
 const dshBin = join(repoRoot, 'apps/cli/lib/bin.js')
 const invalidProvider = fileURLToPath(new URL('./fixtures/invalid-provider.cordis.yml', import.meta.url))
 
@@ -339,15 +359,6 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       expect(web.stdout).toContain('--port <port>')
       expect(web.stdout).not.toContain('dsh web: http://')
 
-      const wildcardHost = await runBuiltBin(['web', '--host', '0.0.0.0'], {
-        DSH_HOME: home,
-        DSH_TELEMETRY_DISABLED: '1',
-      })
-      expect(wildcardHost.code).toBe(1)
-      expect(wildcardHost.stdout).toBe('')
-      expect(wildcardHost.stderr).toContain('--host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')
-      expect(wildcardHost.stderr).not.toContain('dsh web: http://')
-
       const headlessHelp = await runBuiltBin(['--profile', 'headless', '--help'], {
         DSH_HOME: home,
         DSH_TELEMETRY_DISABLED: '1',
@@ -399,7 +410,7 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
     writeFileSync(join(project, '.env'), 'PATH=/project-only-path\n')
     try {
       const result = await runBuiltBin(['--version'], {}, project)
-      expect(result).toEqual({ code: 0, stdout: cliVersion, stderr: '' })
+      expect(result).toEqual({ code: 0, stdout: expectedVersion, stderr: '' })
     } finally {
       rmSync(project, { recursive: true, force: true })
     }

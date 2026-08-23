@@ -2,9 +2,9 @@
 
 English | [中文](README.zh.md)
 
-Optional `ctx.sessionTitle` provider that summarizes every eligible human message through `ctx.llm`. It registers the `all-prompts` cadence and starts a new revision after each new human prompt, using seeded history as well as child-session prompts. A newer revision aborts and supersedes older work; even a provider that ignores cancellation cannot commit stale output.
+Optional `ctx.sessionTitle` provider that summarizes the whole conversation — every eligible human message plus the assistant replies — through `ctx.llm` (enable via `includeAssistantReplies: true`, the default). It registers the `all-prompts` cadence and starts a new revision after each new human prompt, using seeded history as well as child-session prompts. A newer revision aborts and supersedes older work; even a provider that ignores cancellation cannot commit stale output.
 
-The plugin uses the complete required [shared LLM configuration](../session-title-llm/README.md#configuration). Omit both `provider` and `model` to inherit the exact route from each current logged main request, or set both to route title generation independently. If the final framed aggregate prompt exceeds `maxInputBytes`, the request fails instead of truncating history; automatic use warns and keeps the prior title.
+The plugin uses the complete required [shared LLM configuration](../session-title-llm/README.md#configuration). Omit both `provider` and `model` to inherit the exact route from each current logged main request, or set both to route title generation independently. The framed conversation is bounded by `maxInputBytes`: on overflow the middle turns are dropped (the opening exchange stays for context and the most recent messages win) instead of failing.
 
 ## Model Experience
 
@@ -12,7 +12,7 @@ The plugin uses the complete required [shared LLM configuration](../session-titl
 
 #### What the model sees
 
-The title model receives the shared title instruction and a JSON array of all eligible human messages through the current revision, in log order with exact seqs. Seeded history is included.
+The title model receives the shared title instruction and a JSON conversation transcript of all eligible human messages interleaved with the assistant replies, in log order with exact seqs. Seeded history is included. With `includeAssistantReplies: false` only the human messages are framed.
 
 #### Token effect
 
@@ -24,5 +24,5 @@ No main-request invalidation. Auxiliary input grows or changes after each prompt
 
 ## Known Limitations and Deferred Work
 
-- Input overflow retains the prior title; this provider has no summarization-of-summaries or retention policy for very long sessions.
-- It treats all eligible human messages equally and offers no weighting, filtering, or manual-title precedence.
+- Very long conversations are bounded by dropping the middle turns (the opening exchange and the most recent messages win); there is no multi-level summarization-of-summaries yet.
+- It treats all eligible turns equally and offers no weighting, filtering, or manual-title precedence.

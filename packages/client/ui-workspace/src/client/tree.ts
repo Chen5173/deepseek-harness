@@ -20,6 +20,10 @@ export interface SessionNode {
   id: SessionId
   /** Stored display title; the renderer substitutes the localized New Session label for blank rows. */
   title: string
+  /** Owning Workspace display label; populated only by the time-grouped view so the row can render "[label] title". */
+  workspace?: string
+  /** Session workspace root, when known; the row menu's "open workspace folder" action needs it. */
+  cwd?: string
   /** The provisional blank session (renderer shows the localized New Session title). */
   blank: boolean
   /** The runtime Session list reports an interaction awaiting this user. */
@@ -37,13 +41,15 @@ export type SessionOrderBy = 'manual' | 'updated'
 
 /** One workspace group section: header row facts + visible top-level session rows. */
 export interface GroupNode {
-  /** Group key: the workspace id or {@link UNGROUPED_KEY}. */
+  /** Group key: the workspace id, {@link UNGROUPED_KEY}, or a time-bucket expansion key. */
   key: string
-  /** Backing Workspace id; absent only for the ungrouped bucket. */
+  /** Backing Workspace id; absent only for the ungrouped and time buckets. */
   workspaceId: WorkspaceId | undefined
   cwd: string | undefined
   /** Workspace creation time (epoch ms); absent only for the ungrouped bucket. */
   createdAt: number | undefined
+  /** Time-bucket identity; present only for rows derived by {@link deriveTimeGroups}. */
+  timeBucket?: TimeBucketKey
   label: string
   /** Total visible sessions in the group. */
   sessionCount: number
@@ -224,6 +230,7 @@ function sessionNode(
     completed: s.completed === true,
     updatedAt: s.updatedAt,
     ...(s.pendingInteraction === undefined ? {} : { pendingInteraction: s.pendingInteraction }),
+    ...(s.cwd === undefined ? {} : { cwd: s.cwd }),
   }
 }
 
@@ -267,6 +274,107 @@ export function deriveGroups(
       expanded,
       containsCurrent: g.key === currentGroup,
       sessions: expanded ? g.sessions.map(session => sessionNode(session, descendants)) : [],
+    })
+  }
+  return groups
+}
+
+/** One calendar-day recency bucket of the time-grouped view. */
+export type TimeBucketKey = 'today' | 'yesterday' | 'week' | 'month' | 'older'
+
+/** Store expansion keys for time buckets (avoids colliding with workspace ids). */
+export const TIME_EXPANSION_PREFIX = 'time:'
+
+/** Bucket order of the time-grouped view: newest calendar bucket first. */
+const TIME_BUCKET_ORDER: readonly TimeBucketKey[] = ['today', 'yesterday', 'week', 'month', 'older']
+
+const DAY_MS = 86_400_000
+
+/**
+ * Recent-activity bias for the calendar buckets: a row touched within the
+ * last hour counts as "today" even when that activity landed just before
+ * local midnight. Without it a session updated at 23:59 would sit under
+ * "yesterday" while its row label reads "刚刚/几分钟前" — the same fact both
+ * surfaces show must not disagree. Matches the relative-time label's whole
+ * minute range, so "x分钟前" never bucketed as "昨天的".
+ */
+const RECENT_ACTIVITY_WINDOW_MS = 3_600_000
+
+/**
+ * Calendar-day recency bucket of one row: today = since local midnight (or
+ * within the last hour, the recent-activity window), yesterday = the whole
+ * previous calendar day, week = the five days before that, month = through
+ * 30 calendar days back, older = everything else. Natural-day boundaries
+ * keep rows from hopping buckets across a rolling window.
+ */
+export function timeBucketOf(updatedAt: number, now: number): TimeBucketKey {
+  const todayStart = new Date(now)
+  todayStart.setHours(0, 0, 0, 0)
+  const start = todayStart.getTime()
+  if (updatedAt >= start || updatedAt >= now - RECENT_ACTIVITY_WINDOW_MS) return 'today'
+  if (updatedAt >= start - DAY_MS) return 'yesterday'
+  if (updatedAt >= start - 7 * DAY_MS) return 'week'
+  if (updatedAt >= start - 30 * DAY_MS) return 'month'
+  return 'older'
+}
+
+/**
+ * Derive the time-grouped session list: one section per calendar bucket in
+ * fixed order, members newest-first inside each. Today and yesterday start
+ * expanded; an explicit expansion entry overrides the default. Visibility
+ * rules (blank/archived/subagent) match the flat list; manual ordering does
+ * not apply, so the view carries no drag and no order account.
+ */
+export function deriveTimeGroups(
+  list: SessionListState,
+  archivedSessionIds: readonly SessionId[],
+  now: number,
+  expanded: Readonly<Record<string, boolean>> = {},
+  workspaces: readonly WorkspaceView[] = [],
+): GroupNode[] {
+  const archived = new Set(archivedSessionIds)
+  const descendants = indexSubagentDescendants(list.byId)
+  // Time mode may surface the owning Workspace before each title; real
+  // Workspace titles win, loose sessions fall back to their directory name.
+  const workspaceBySession = new Map<SessionId, string>()
+  for (const workspace of workspaces) {
+    for (const sessionId of workspace.sessionIds) {
+      if (!workspaceBySession.has(sessionId)) workspaceBySession.set(sessionId, workspace.title)
+    }
+  }
+  const labelOf = (summary: SessionSummary): string =>
+    workspaceBySession.get(summary.id) ?? workspaceLabel(summary.cwd)
+  const buckets = new Map<TimeBucketKey, SessionNode[]>()
+  let currentBucket: TimeBucketKey | undefined
+  for (const id of list.ids) {
+    const s = list.byId[id]
+    if (s === undefined || !sessionVisible(s, list.current, archived)) continue
+    const bucket = timeBucketOf(s.updatedAt, now)
+    if (s.id === list.current) currentBucket = bucket
+    const node = sessionNode(s, descendants)
+    node.workspace = labelOf(s)
+    const members = buckets.get(bucket)
+    if (members === undefined) buckets.set(bucket, [node])
+    else members.push(node)
+  }
+  const groups: GroupNode[] = []
+  for (const bucket of TIME_BUCKET_ORDER) {
+    const members = buckets.get(bucket)
+    if (members === undefined) continue
+    members.sort((a, b) => b.updatedAt - a.updatedAt)
+    const key = TIME_EXPANSION_PREFIX + bucket
+    const expandedNow = expanded[key] ?? (bucket === 'today' || bucket === 'yesterday')
+    groups.push({
+      key,
+      workspaceId: undefined,
+      cwd: undefined,
+      createdAt: undefined,
+      timeBucket: bucket,
+      label: bucket,
+      sessionCount: members.length,
+      expanded: expandedNow,
+      containsCurrent: bucket === currentBucket,
+      sessions: expandedNow ? members : [],
     })
   }
   return groups

@@ -10,7 +10,7 @@ import clsx from 'clsx'
 import {
   HoverCard, IconArchiveOutline20, IconBranchOutline16, IconEditOutline16,
   IconEllipsisOutline16, IconFolderClose16, IconFolderOpen16, IconPlusOutline16,
-  IconTrashOutline16, IconTriangleRightFill14, Menu, StateDot,
+  IconRefreshOutline16, IconTrashOutline16, IconTriangleRightFill14, Menu, StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { abbreviateHomePath } from '@deepseek-ai/dsh-client-runtime/client'
@@ -359,21 +359,30 @@ export function SearchResultItem({ result, currentId, onOpen, t }: {
  * @param props.t - the browser root's locale seat.
  * @returns the session row.
  */
-export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork, onArchive, drag, flat = false, t }: {
+export function SessionNodeItem({
+  node, currentId, now, onOpen, onRename, onRegenerateTitle, onFork, onArchive, onOpenWorkspace,
+  drag, flat = false, showWorkspace = false, t,
+}: {
   node: SessionNode
   currentId: string | undefined
   now: number
   onOpen: (id: SessionNode['id']) => void
   /** Open the browser-owned session rename dialog (row menu action). */
   onRename: (id: SessionNode['id'], currentTitle: string) => void
+  /** Regenerate the session title from its content (row menu action). */
+  onRegenerateTitle: (id: SessionNode['id']) => void
   /** Fork a session at its last completed turn (row menu action). */
   onFork: (id: SessionNode['id']) => void
   /** Archive this session (row menu action; commits without a dialog). */
   onArchive: (id: SessionNode['id']) => void
+  /** Open this session's workspace directory on the Host (row menu action). */
+  onOpenWorkspace: (id: SessionNode['id'], cwd: string) => void
   /** Present only on draggable rows (workspace-group sessions outside search). */
   drag?: RowDragProps | undefined
   /** The row is rendered without a parent Workspace header. */
   flat?: boolean | undefined
+  /** Prefix the owning Workspace label ("[label] title") — the time-grouped view's optional context. */
+  showWorkspace?: boolean | undefined
   t: RowTranslate
 }) {
   const row = node
@@ -387,7 +396,12 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
   // touches the session log, so it is not styled as destructive and needs no
   // confirmation dialog.
   const sessionMenuItems = [
+    // Opening a directory needs a known workspace root; blank/loose rows hide it.
+    ...(row.cwd === undefined || row.cwd === '' ? [] : [
+      { id: 'open-workspace', label: t('menu.openWorkspaceFolder'), icon: <IconFolderOpen16 /> },
+    ]),
     { id: 'rename', label: t('rename'), icon: <IconEditOutline16 /> },
+    { id: 'regenerate', label: t('menu.regenerateTitle'), icon: <IconRefreshOutline16 /> },
     { id: 'fork', label: t('menu.fork'), icon: <IconBranchOutline16 /> },
     // 20-native glyph in the menu's 16px icon slot (Menu.module.css .itemIcon).
     { id: 'archive', label: t('menu.archiveSession'), icon: <IconArchiveOutline20 size={16} /> },
@@ -436,7 +450,12 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
           {showStatus && <SessionStatusDots statuses={statuses} />}
         </span>
       )}
-      <span className={css.title}>{title}</span>
+      <span className={css.title}>
+        {showWorkspace && node.workspace !== undefined && (
+          <span className={css.workspacePrefix}>[{node.workspace}] </span>
+        )}
+        {title}
+      </span>
       {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not
@@ -451,8 +470,10 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
             onSelect={(id) => {
               setMenuOpen(false)
               if (id === 'rename') onRename(node.id, row.title)
+              if (id === 'regenerate') onRegenerateTitle(node.id)
               if (id === 'fork') onFork(node.id)
               if (id === 'archive') onArchive(node.id)
+              if (id === 'open-workspace' && row.cwd !== undefined) onOpenWorkspace(node.id, row.cwd)
             }}
             portal
             closeOnPointerLeave

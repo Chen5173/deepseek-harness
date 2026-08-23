@@ -107,6 +107,21 @@ describe('native path opener', () => {
     )
   })
 
+  it('routes a Windows directory to the file explorer via Start-Process', async () => {
+    // process.cwd() is a real directory on every test platform; forcing the
+    // win32 branch routes it to explorer.exe rather than the default-app handoff.
+    const dir = process.cwd()
+    const literal = dir.includes("'") ? `'${dir.replace(/'/g, "''")}'` : `'${dir}'`
+    const run = vi.fn<PathOpenerRunner>(async () => ({ stdout: '', stderr: '' }))
+    await openNativePath(dir, signal(), { platform: 'win32', run })
+    expect(run.mock.calls[0]?.[0]).toBe('powershell.exe')
+    expect(run.mock.calls[0]?.[1]).toEqual([
+      '-NoProfile',
+      '-Command',
+      `Start-Process explorer.exe -ArgumentList ${literal}`,
+    ])
+  })
+
   it('opens with Linux xdg-open', async () => {
     const run = vi.fn<PathOpenerRunner>(async () => ({ stdout: '', stderr: '' }))
     await openNativePath('/tmp/a.txt', signal(), {

@@ -11,6 +11,7 @@ import {
   resolveClientBuildEnvironment,
   writeClientBuildRecord,
 } from './client-build-environment.ts'
+import { ohMyDshClientTitle } from './oh-my-dsh-version.ts'
 import { pnpmInvocation } from './pnpm-invocation.ts'
 
 /** Run one package script through the package manager that invoked this build. */
@@ -37,6 +38,11 @@ function main(): void {
   const parentEnvironment = {
     ...process.env,
     DSH_CLIENT_COMMIT_HASH: repositoryCommitHash(root, process.env),
+    // Personal forks default to the Oh-My-Dsh brand with a per-commit build
+    // number; an explicit DSH_CLIENT_TITLE or the official profile wins.
+    ...(process.env.DSH_CLIENT_TITLE === undefined
+      ? { DSH_CLIENT_TITLE: ohMyDshClientTitle(root, process.env) }
+      : {}),
   }
   const clientEnvironment = resolveClientBuildEnvironment(parentEnvironment, values.profile)
   const buildEnvironment = clientBuildProcessEnvironment(parentEnvironment, clientEnvironment)

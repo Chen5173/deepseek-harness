@@ -180,6 +180,14 @@
   line-height: 20px;
 }
 
+/* Owning-Workspace context prefix (time-grouped view, optional): dimmed so
+   the session title stays the visual anchor. */
+.workspacePrefix {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
 .renameInput {
   min-width: 0;
   font-size: 14px;

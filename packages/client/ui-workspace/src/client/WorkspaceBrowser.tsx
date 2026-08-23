@@ -12,15 +12,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
-  Button, IconCloseFill14, IconPersonalizationOutline16,
-  IconProjectAddOutline16, IconSearchOutline16, Menu, Modal, Tooltip,
+  Button, IconCloseFill14, IconPersonalizationOutline16, IconProjectAddOutline16,
+  IconSearchOutline16, IconTriangleRightFill14, IconWarningOutline16, Menu, Modal, Toast, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   SessionId, SessionListState, SessionSearchResultItem, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { WorkspaceBrowserProps } from './contract/slots.ts'
-import type { SessionNode, SessionOrderBy } from './tree.ts'
-import { deriveFlat, deriveGroups, deriveSearchResults, UNGROUPED_KEY } from './tree.ts'
+import type { SessionNode, SessionOrderBy, TimeBucketKey } from './tree.ts'
+import { deriveFlat, deriveGroups, deriveSearchResults, deriveTimeGroups, UNGROUPED_KEY } from './tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './rows/Rows.tsx'
 import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
@@ -144,11 +144,13 @@ function nextSessionOrderAccount({
 }
 
 /** Grouping and ordering menu; own open state so it resets with the wide chrome. */
-function ViewOptionsMenu({ groupBy, orderBy, onGroupPick, onOrderPick, t }: {
-  groupBy: 'workspace' | 'flat'
+function ViewOptionsMenu({ groupBy, orderBy, timeShowWorkspace, onGroupPick, onOrderPick, onTimeShowWorkspaceToggle, t }: {
+  groupBy: 'workspace' | 'flat' | 'time'
   orderBy: SessionOrderBy
-  onGroupPick: (mode: 'workspace' | 'flat') => void
+  timeShowWorkspace: boolean
+  onGroupPick: (mode: 'workspace' | 'flat' | 'time') => void
   onOrderPick: (mode: SessionOrderBy) => void
+  onTimeShowWorkspaceToggle: () => void
   t: WorkspaceBrowserProps['t']
 }) {
   const [open, setOpen] = useState(false)
@@ -160,15 +162,32 @@ function ViewOptionsMenu({ groupBy, orderBy, onGroupPick, onOrderPick, t }: {
         { type: 'label' as const, id: 'group-by', text: t('groupBy.label') },
         { id: 'workspace', label: t('groupBy.workspace') },
         { id: 'flat', label: t('groupBy.flat') },
-        { type: 'separator' as const, id: 'order-by-separator' },
-        { type: 'label' as const, id: 'order-by', text: t('orderBy.label') },
-        { id: 'manual', label: t('orderBy.manual') },
-        { id: 'updated', label: t('orderBy.updated') },
+        { id: 'time', label: t('groupBy.time') },
+        // Time mode trades the order section for the Workspace-context
+        // toggle: buckets order by recency by construction (manual ordering
+        // has no meaning across calendar buckets), and the Workspace label
+        // is the context the bucketed view otherwise loses.
+        ...(groupBy === 'time'
+          ? [
+            { type: 'separator' as const, id: 'time-show-separator' },
+            { id: 'time-show-workspace', label: t('timeGroup.showWorkspace') },
+          ]
+          : [
+            { type: 'separator' as const, id: 'order-by-separator' },
+            { type: 'label' as const, id: 'order-by', text: t('orderBy.label') },
+            { id: 'manual', label: t('orderBy.manual') },
+            { id: 'updated', label: t('orderBy.updated') },
+          ]),
       ]}
-      selectedIds={[groupBy, orderBy]}
+      selectedIds={[
+        groupBy,
+        orderBy,
+        ...(groupBy === 'time' && timeShowWorkspace ? ['time-show-workspace' as const] : []),
+      ]}
       onSelect={(id) => {
-        if (id === 'workspace' || id === 'flat') onGroupPick(id)
+        if (id === 'workspace' || id === 'flat' || id === 'time') onGroupPick(id)
         else if (id === 'manual' || id === 'updated') onOrderPick(id)
+        else if (id === 'time-show-workspace') onTimeShowWorkspaceToggle()
         setOpen(false)
       }}
       align="end"
@@ -241,8 +260,12 @@ type SessionTreeProps = Pick<
   onDeleteRequest: (workspaceId: WorkspaceId, currentTitle: string) => void
   /** Open the browser-owned session rename dialog. */
   onSessionRename: (sessionId: SessionNode['id'], currentTitle: string) => void
+  /** Regenerate a session title from its content (row menu action). */
+  onSessionRegenerateTitle: (sessionId: SessionNode['id']) => void
   /** Archive a session (row menu action; the row disappears on the state echo). */
   onSessionArchive: (sessionId: SessionNode['id']) => void
+  /** Open a session's workspace directory on the Host (row menu action). */
+  onOpenWorkspace: (sessionId: SessionNode['id'], cwd: string) => void
   /** Session order behavior: fixed after edits, or additionally promoted by user activity. */
   orderBy: SessionOrderBy
 }
@@ -250,7 +273,7 @@ type SessionTreeProps = Pick<
 /** The scrolling session tree; unmounting drops the sessions subscription and expand-all state. */
 function SessionTree({
   useSessions, startSession, open, forkSession, workspaces, archivedSessionIds,
-  onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive,
+  onRenameRequest, onDeleteRequest, onSessionRename, onSessionRegenerateTitle, onSessionArchive, onOpenWorkspace,
   insertWorkspaceBefore, insertSessionBefore, orderBy,
   groupExpansion, setGroupExpanded,
   sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, home, t,
@@ -517,8 +540,10 @@ function SessionTree({
                     now={now}
                     onOpen={open}
                     onRename={onSessionRename}
+                    onRegenerateTitle={onSessionRegenerateTitle}
                     onFork={forkSession}
                     onArchive={onSessionArchive}
+                    onOpenWorkspace={onOpenWorkspace}
                     drag={dragProps}
                     t={t}
                   />
@@ -547,7 +572,7 @@ function SessionTree({
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
-  useSessions, open, forkSession, onSessionRename, onSessionArchive, archivedSessionIds,
+  useSessions, open, forkSession, onSessionRename, onSessionRegenerateTitle, onSessionArchive, onOpenWorkspace, archivedSessionIds,
   orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t,
 }: Pick<
   SessionTreeProps,
@@ -555,7 +580,9 @@ function FlatList({
   | 'open'
   | 'forkSession'
   | 'onSessionRename'
+  | 'onSessionRegenerateTitle'
   | 'onSessionArchive'
+  | 'onOpenWorkspace'
   | 'archivedSessionIds'
   | 'orderBy'
   | 'sessionOrderByAccount'
@@ -633,8 +660,10 @@ function FlatList({
               now={now}
               onOpen={open}
               onRename={onSessionRename}
+              onRegenerateTitle={onSessionRegenerateTitle}
               onFork={forkSession}
               onArchive={onSessionArchive}
+              onOpenWorkspace={onOpenWorkspace}
               flat
               drag={{
                 start: () => {
@@ -659,6 +688,87 @@ function FlatList({
             />
           )
         })}
+      </div>
+      <span className={css.fade} />
+    </div>
+  )
+}
+
+/** Literal locale keys for the time-bucket headers (typed `t` accepts). */
+const TIME_GROUP_LABEL_KEYS: Readonly<Record<TimeBucketKey, 'timeGroup.today' | 'timeGroup.yesterday' | 'timeGroup.week' | 'timeGroup.month' | 'timeGroup.older'>> = {
+  today: 'timeGroup.today',
+  yesterday: 'timeGroup.yesterday',
+  week: 'timeGroup.week',
+  month: 'timeGroup.month',
+  older: 'timeGroup.older',
+}
+
+/** The "By time" body: calendar recency buckets, no drag (order is inherent). */
+function TimeList({
+  useSessions, open, forkSession, onSessionRename, onSessionRegenerateTitle, onSessionArchive, onOpenWorkspace,
+  archivedSessionIds, groupExpansion, setGroupExpanded, workspaces, timeShowWorkspace, t,
+}: Pick<
+  SessionTreeProps,
+  | 'useSessions'
+  | 'open'
+  | 'forkSession'
+  | 'onSessionRename'
+  | 'onSessionRegenerateTitle'
+  | 'onSessionArchive'
+  | 'onOpenWorkspace'
+  | 'archivedSessionIds'
+  | 'groupExpansion'
+  | 'setGroupExpanded'
+  | 't'
+> & {
+  workspaces: readonly WorkspaceView[]
+  timeShowWorkspace: boolean
+}) {
+  const list = useSessions(s => s)
+  const now = Date.now()
+  const groups = useMemo(
+    () => deriveTimeGroups(list, archivedSessionIds, now, groupExpansion, workspaces),
+    [list, archivedSessionIds, groupExpansion, now, workspaces],
+  )
+  return (
+    <div className={clsx(css.treeBody, css.wide)}>
+      <div className={clsx(css.list)} role="tree" aria-label={t('section.sessions')}>
+        {groups.length === 0 && (
+          <div className={css.empty}>{t('empty.none')}</div>
+        )}
+        {groups.map(group => (
+          <div key={group.key} className={css.groupSection}>
+            <button
+              type="button"
+              className={css.timeGroupHeader}
+              aria-expanded={group.expanded}
+              onClick={() => { setGroupExpanded(group.key, !group.expanded) }}
+            >
+              <IconTriangleRightFill14 className={clsx(css.timeGroupChevron, group.expanded && css.timeGroupChevronOpen)} />
+              <span className={css.timeGroupLabel}>{group.timeBucket === undefined
+                ? group.label
+                : t(TIME_GROUP_LABEL_KEYS[group.timeBucket])}</span>
+              <span className={css.timeGroupCount}>{group.sessionCount}</span>
+            </button>
+            {group.sessions.map(node => (
+              <SessionNodeItem
+                key={node.id}
+                node={node}
+                currentId={list.current}
+                now={now}
+                onOpen={open}
+                onRename={onSessionRename}
+                onRegenerateTitle={onSessionRegenerateTitle}
+                onFork={forkSession}
+                onArchive={onSessionArchive}
+                onOpenWorkspace={onOpenWorkspace}
+                flat
+                showWorkspace={timeShowWorkspace}
+                t={t}
+              />
+            ))}
+          </div>
+        ))}
       </div>
       <span className={css.fade} />
     </div>
@@ -751,6 +861,7 @@ export function WorkspaceBrowser({
   startSession,
   open,
   renameSession,
+  regenerateSessionTitle,
   forkSession,
   renameWorkspace,
   deleteWorkspace,
@@ -758,6 +869,7 @@ export function WorkspaceBrowser({
   archiveSession,
   insertSessionBefore,
   createWorkspace,
+  openPath,
   searchSessions,
   searchResultLimit,
   useDirectoryFlow,
@@ -774,6 +886,7 @@ export function WorkspaceBrowser({
   const directoryFlowAvailable = useDirectoryFlow(occupied => occupied)
   const groupBy = useStore(s => s.groupBy)
   const orderBy = useStore(s => s.orderBy)
+  const timeShowWorkspace = useStore(s => s.timeShowWorkspace)
   const groupExpansion = useStore(s => s.groupExpansion)
   const sessionOrderByAccount = useStore(s => s.sessionOrderByAccount)
   const sessionUpdatedAtByAccount = useStore(s => s.sessionUpdatedAtByAccount)
@@ -972,6 +1085,29 @@ export function WorkspaceBrowser({
     })
   }
 
+  // Title regeneration: menu-triggered, announced through a fading toast on
+  // failure (the row keeps its previous title). Wire error strings pass
+  // through untranslated by policy.
+  const [regenerateToast, setRegenerateToast] = useState<{ seq: number; text: string } | null>(null)
+  const regenerateToastSeq = useRef(0)
+  const onSessionRegenerateTitle = (sessionId: SessionNode['id']) => {
+    regenerateSessionTitle(sessionId).catch((reason: unknown) => {
+      regenerateToastSeq.current += 1
+      setRegenerateToast({ seq: regenerateToastSeq.current, text: reason instanceof Error ? reason.message : String(reason) })
+    })
+  }
+
+  // Open the workspace directory on the Host; a refusal (headless host,
+  // missing folder) lands in the same fading toast as title regeneration.
+  const [openFolderToast, setOpenFolderToast] = useState<{ seq: number; text: string } | null>(null)
+  const openFolderToastSeq = useRef(0)
+  const onOpenWorkspace = (_sessionId: SessionNode['id'], cwd: string) => {
+    openPath(cwd).catch((reason: unknown) => {
+      openFolderToastSeq.current += 1
+      setOpenFolderToast({ seq: openFolderToastSeq.current, text: reason instanceof Error ? reason.message : String(reason) })
+    })
+  }
+
   // Delete dialog is separate from the row so a successful removal can
   // unmount that row without tearing down the in-flight confirmation state.
   const [deleteTarget, setDeleteTarget] = useState<{ workspaceId: WorkspaceId; title: string } | null>(null)
@@ -1012,7 +1148,7 @@ export function WorkspaceBrowser({
       <div className={css.sectionHeader}>
         {wide && (
           <span className={clsx(css.sectionLabel, css.wide, searchExpanded && css.sectionLabelHidden)}>
-            {groupBy === 'flat' ? t('section.sessions') : t('section.workspaces')}
+            {groupBy === 'workspace' ? t('section.workspaces') : t('section.sessions')}
           </span>
         )}
         {wide && (
@@ -1077,8 +1213,10 @@ export function WorkspaceBrowser({
             <ViewOptionsMenu
               groupBy={groupBy}
               orderBy={orderBy}
+              timeShowWorkspace={timeShowWorkspace}
               onGroupPick={(mode) => { actions.setGroupBy(mode) }}
               onOrderPick={(mode) => { actions.setOrderBy(mode) }}
+              onTimeShowWorkspaceToggle={() => { actions.setTimeShowWorkspace(!timeShowWorkspace) }}
               t={t}
             />
           )}
@@ -1154,52 +1292,69 @@ export function WorkspaceBrowser({
               t={t}
             />
           )
-          : groupBy === 'flat'
+          : groupBy === 'time'
             ? (
-              <FlatList
+              <TimeList
                 useSessions={useSessions} open={open} forkSession={forkSession}
-                onSessionRename={onSessionRename} onSessionArchive={onSessionArchive}
+                onSessionRename={onSessionRename} onSessionRegenerateTitle={onSessionRegenerateTitle} onSessionArchive={onSessionArchive}
+                onOpenWorkspace={onOpenWorkspace}
                 archivedSessionIds={archivedSessionIds}
-                orderBy={orderBy}
-                sessionOrderByAccount={sessionOrderByAccount}
-                sessionUpdatedAtByAccount={sessionUpdatedAtByAccount}
-                syncSessionOrderAccount={actions.syncSessionOrderAccount}
-                setSessionOrder={actions.setSessionOrder}
+                groupExpansion={groupExpansion}
+                setGroupExpanded={actions.setGroupExpanded}
+                workspaces={workspaces}
+                timeShowWorkspace={timeShowWorkspace}
                 t={t}
               />
             )
-            : (
-              <SessionTree
-                useSessions={useSessions}
-                onSessionRename={onSessionRename}
-                onSessionArchive={onSessionArchive}
-                forkSession={forkSession}
-                workspaces={workspaces}
-                groupExpansion={groupExpansion}
-                setGroupExpanded={actions.setGroupExpanded}
-                sessionOrderByAccount={sessionOrderByAccount}
-                sessionUpdatedAtByAccount={sessionUpdatedAtByAccount}
-                syncSessionOrderAccount={actions.syncSessionOrderAccount}
-                setSessionOrder={actions.setSessionOrder}
-                archivedSessionIds={archivedSessionIds}
-                startSession={startSession}
-                open={open}
-                insertWorkspaceBefore={insertWorkspaceBefore}
-                insertSessionBefore={insertSessionBefore}
-                orderBy={orderBy}
-                home={home}
-                t={t}
-                onRenameRequest={(workspaceId, currentTitle) => {
-                  setRenameTarget({ workspaceId, currentTitle })
-                  setRenameDraft(currentTitle)
-                  setRenameError(null)
-                }}
-                onDeleteRequest={(workspaceId, title) => {
-                  setDeleteTarget({ workspaceId, title })
-                  setDeleteError(null)
-                }}
-              />
-            ))}
+            : groupBy === 'flat'
+              ? (
+                <FlatList
+                  useSessions={useSessions} open={open} forkSession={forkSession}
+                  onSessionRename={onSessionRename} onSessionRegenerateTitle={onSessionRegenerateTitle} onSessionArchive={onSessionArchive}
+                  onOpenWorkspace={onOpenWorkspace}
+                  archivedSessionIds={archivedSessionIds}
+                  orderBy={orderBy}
+                  sessionOrderByAccount={sessionOrderByAccount}
+                  sessionUpdatedAtByAccount={sessionUpdatedAtByAccount}
+                  syncSessionOrderAccount={actions.syncSessionOrderAccount}
+                  setSessionOrder={actions.setSessionOrder}
+                  t={t}
+                />
+              )
+              : (
+                <SessionTree
+                  useSessions={useSessions}
+                  onSessionRename={onSessionRename}
+                  onSessionRegenerateTitle={onSessionRegenerateTitle}
+                  onSessionArchive={onSessionArchive}
+                  onOpenWorkspace={onOpenWorkspace}
+                  forkSession={forkSession}
+                  workspaces={workspaces}
+                  groupExpansion={groupExpansion}
+                  setGroupExpanded={actions.setGroupExpanded}
+                  sessionOrderByAccount={sessionOrderByAccount}
+                  sessionUpdatedAtByAccount={sessionUpdatedAtByAccount}
+                  syncSessionOrderAccount={actions.syncSessionOrderAccount}
+                  setSessionOrder={actions.setSessionOrder}
+                  archivedSessionIds={archivedSessionIds}
+                  startSession={startSession}
+                  open={open}
+                  insertWorkspaceBefore={insertWorkspaceBefore}
+                  insertSessionBefore={insertSessionBefore}
+                  orderBy={orderBy}
+                  home={home}
+                  t={t}
+                  onRenameRequest={(workspaceId, currentTitle) => {
+                    setRenameTarget({ workspaceId, currentTitle })
+                    setRenameDraft(currentTitle)
+                    setRenameError(null)
+                  }}
+                  onDeleteRequest={(workspaceId, title) => {
+                    setDeleteTarget({ workspaceId, title })
+                    setDeleteError(null)
+                  }}
+                />
+              ))}
       </div>
 
       <Modal
@@ -1293,6 +1448,24 @@ export function WorkspaceBrowser({
         {deleting && <div className={css.deleteStatus} role="status">{t('delete.pending')}</div>}
         {deleteError !== null && <div className={css.renameError} role="alert">{deleteError}</div>}
       </Modal>
+      {regenerateToast !== null && (
+        <Toast
+          key={regenerateToast.seq}
+          text={regenerateToast.text}
+          icon={<IconWarningOutline16 />}
+          anchor={null}
+          onDone={() => { setRegenerateToast(null) }}
+        />
+      )}
+      {openFolderToast !== null && (
+        <Toast
+          key={openFolderToast.seq}
+          text={openFolderToast.text}
+          icon={<IconWarningOutline16 />}
+          anchor={null}
+          onDone={() => { setOpenFolderToast(null) }}
+        />
+      )}
     </div>
   )
 }

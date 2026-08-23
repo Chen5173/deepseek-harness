@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
-import LlmRuntime, { createUserMessage, CallId, isAgentLoopRequest, LlmAdapter  } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createAssistantMessage, createUserMessage, CallId, isAgentLoopRequest, LlmAdapter  } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
@@ -171,6 +171,51 @@ describe('generateSessionTitleWithLlm', () => {
         messages: options.messages,
         maxTokens: 32,
       })
+  })
+
+  it('frames a conversation transcript (user + assistant replies) when includeAssistantReplies is set', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(LlmRuntime)
+    const session = ctx.sessions.create(SessionId(`title-conv-${++nextSession}`))
+    session.append('turn/start', { turn: 1 })
+    const first = session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'build a todo app' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    session.append('assistant/message', {
+      message: createAssistantMessage({
+        content: [{ type: 'text', text: 'Here is the todo app scaffold' }],
+        source: { provider: 'main', model: 'main-model' },
+      }),
+      turn: 1,
+      step: 1,
+    }, { surfaceOp: 'append' })
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['current-route'], adapter)
+
+    const providerRequest: SessionTitleProviderRequest = {
+      session,
+      messages: [{ seq: first.seq, text: 'build a todo app' }],
+      route: { provider: 'current-route', model: 'current-model' },
+      signal: new AbortController().signal,
+    }
+    await generateSessionTitleWithLlm(
+      ctx,
+      resolveSessionTitleLlmConfig(CONFIG),
+      providerRequest,
+      providerRequest.messages,
+      TITLE_PROVIDER,
+      { includeAssistantReplies: true },
+    )
+
+    const options = adapter.requests[0]!
+    expect(options.system).toContain('summarizing the conversation')
+    const prompt = options.messages[0]?.content[0]
+    expect(prompt?.type === 'text' && prompt.text).toContain('build a todo app')
+    expect(prompt?.type === 'text' && prompt.text).toContain('Here is the todo app scaffold')
+    expect(prompt?.type === 'text' && prompt.text).toContain('"role":"assistant"')
   })
 
   it('uses paired explicit overrides and bounds the final framed input before model dispatch', async () => {

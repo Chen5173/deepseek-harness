@@ -15,6 +15,8 @@ import type {
 } from '@deepseek-ai/dsh-session'
 // Type-only: resolves ctx.sessionProjections for the optional unit child.
 import type {} from '@deepseek-ai/dsh-session-projection'
+// Type-only: resolves ctx.sessionProjectionCache for the optional post-append checkpoint.
+import type {} from '@deepseek-ai/dsh-session-projection-cache'
 // The `title` projection-key declaration lives in src/types.ts (its one home);
 // this re-export projects the type face onto the package root AND keeps the
 // module edge in the emitted index.d.ts, so aggregate programs consuming the
@@ -377,6 +379,7 @@ export class SessionTitleService extends Service {
       messageSeqs: [],
       source: { kind: 'user' },
     })
+    this.flushTitleCheckpoint(session)
     const snapshot = this.get(session)
     /* v8 ignore next -- unreachable: the append above just committed a session/title event. */
     if (snapshot === undefined) throw new Error('renamed title failed to fold')
@@ -576,6 +579,7 @@ export class SessionTitleService extends Service {
           ...accepted.model === undefined ? {} : { model: accepted.model },
         },
       })
+      this.flushTitleCheckpoint(session)
       return this.get(session)
     } finally {
       const state = this.work.get(session)
@@ -750,6 +754,26 @@ export class SessionTitleService extends Service {
       messageSeqs: [first.seq],
       source: { kind: 'fallback' },
     })
+    this.flushTitleCheckpoint(session)
+  }
+
+  /**
+   * Durably checkpoint the projection cache right after a title append. A
+   * title usually lands long after the turn/end that last checkpointed the
+   * session, so without this prompt write the value list rows read can stay
+   * stale until the next throttle trigger or session disposal — the common
+   * "renamed title gone after restart" failure. The append above already
+   * broadcast the event (the projection registry folded it synchronously),
+   * so this checkpoint captures the new title. Fail-soft: a lost write only
+   * costs a longer cold-read tail replay, never a wrong value.
+   */
+  private flushTitleCheckpoint(session: Session): void {
+    const cache = this.ctx.get('sessionProjectionCache')
+    if (cache === undefined) return
+    void cache.write(session).catch((error: unknown) => {
+      if (!this.serviceActive()) return
+      this.ctx.logger.warn(`session "${session.id}": projection-cache checkpoint after title failed: ${String(error)}`)
+    })
   }
 
   /** Create the first deterministic fallback if the session still lacks a title. */
@@ -779,6 +803,7 @@ export class SessionTitleService extends Service {
         messageSeqs: [first.seq],
         source: { kind: 'fallback' },
       })
+      this.flushTitleCheckpoint(session)
       return this.get(session)
     })
     state.fallback = fallback

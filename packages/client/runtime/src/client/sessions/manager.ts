@@ -683,15 +683,20 @@ export class SessionManager {
   handleMuxEnvelope(envelope: RpcRequest<MuxFrame>): void {
     const frame = envelope.payload
     if (frame.type === 'stream/error') return // Controller already treats this as stream failure
-    if (
-      frame.type === 'session/event'
-      && frame.event.type === 'user/message'
-      && frame.event.data.source.kind === 'user'
-    ) {
-      // session.list supplies the cold baseline, while a direct prompt or an
-      // admitted steer advances it between pulls. Max keeps replayed or
-      // repaired older user messages from moving the row backwards.
-      this.recordMutation({ kind: 'activity', sessionId: frame.sessionId, updatedAt: frame.event.time })
+    if (frame.type === 'session/event') {
+      const event = frame.event
+      // session.list supplies the cold baseline, while live frames advance it
+      // between pulls: a direct prompt, a completed assistant step message, or
+      // a turn completion each count as activity. Streaming chunks are a
+      // separate event, so this is the turn-boundary debounce — the row moves
+      // at step granularity, never per token. Max keeps replayed or repaired
+      // older events from moving the row backwards.
+      const activity = event.type === 'assistant/message'
+        || event.type === 'turn/end'
+        || (event.type === 'user/message' && event.data.source.kind === 'user')
+      if (activity) {
+        this.recordMutation({ kind: 'activity', sessionId: frame.sessionId, updatedAt: event.time })
+      }
     }
     if (frame.type === 'session/projection') {
       // Finished host-computed value: land it in the resident store whether or
@@ -1045,7 +1050,8 @@ export class SessionManager {
         prev !== undefined && prev.updatedAt === entry.updatedAt && prev.running === entry.running
         && prev.blank === entry.blank && prev.agentPreset === entry.agentPreset
         && prev.parentSessionId === entry.parentSessionId && prev.cwd === entry.cwd
-        && prev.origin === entry.origin && prev.title === entry.title && prev.depth === entry.depth
+        && prev.origin === entry.origin && prev.title === entry.title
+        && prev.titleFallback === entry.titleFallback && prev.depth === entry.depth
         && prev.pendingInteraction === entry.pendingInteraction
         && prev.projectionValues === entry.projectionValues
         && prev.completed === entry.completed

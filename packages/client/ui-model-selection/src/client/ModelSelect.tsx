@@ -28,6 +28,9 @@ import css from './ModelSelect.module.css'
 /** Which pane the dropdown shows: the two-row root or one drilled-in list. */
 type Pane = 'root' | 'model' | 'effort'
 
+/** The official DeepSeek provider route: its trigger label reads "official". */
+const OFFICIAL_DEEPSEEK_PROVIDER = 'deepseek-official'
+
 /** One dynamic effort row; undefined means preserve the provider default. */
 interface EffortChoice {
   key: string
@@ -203,12 +206,21 @@ export function ModelSelect(
   }
 
   const modelLabel = currentChoice?.model.name ?? t('trigger.fallback')
-  const triggerLabel = effortLabel === undefined ? modelLabel : `${modelLabel} · ${effortLabel}`
+  // Provider context beside the model name: the official DeepSeek route shows
+  // "official", third-party catalogs show their provider display name. Hidden
+  // while no catalog row is selected (fallback label, removed-model rows).
+  const providerLabel = currentChoice === undefined
+    ? undefined
+    : currentChoice.group.id === OFFICIAL_DEEPSEEK_PROVIDER
+      ? t('provider.official')
+      : currentChoice.group.name
+  const seatLabel = providerLabel === undefined ? modelLabel : `${providerLabel}.${modelLabel}`
+  const triggerLabel = effortLabel === undefined ? seatLabel : `${seatLabel} · ${effortLabel}`
   const triggerAria = currentChoice === undefined
     ? t('trigger.selectAria')
     : effortLabel === undefined
-      ? t('trigger.aria', { model: modelLabel })
-      : t('trigger.ariaEffort', { model: modelLabel, effort: effortLabel })
+      ? t('trigger.aria', { model: modelLabel, provider: providerLabel ?? '' })
+      : t('trigger.ariaEffort', { model: modelLabel, provider: providerLabel ?? '', effort: effortLabel })
   itemRefs.current = []
   let itemIndex = 0
   const itemRef = () => {
@@ -236,6 +248,7 @@ export function ModelSelect(
           }
         }}
       >
+        {providerLabel !== undefined && <span className={css.triggerProvider}>{providerLabel}.</span>}
         <span className={css.triggerLabel}>{modelLabel}</span>
         {effortLabel !== undefined && <span className={css.triggerEffort}>{effortLabel}</span>}
         <IconChevronDownOutline14 className={clsx(css.chevron, open && css.chevronOpen)} />

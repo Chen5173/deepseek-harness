@@ -83,7 +83,7 @@ import { SettingsConflictError, settingsNamespace } from '@deepseek-ai/dsh-setti
 import type { SettingsDescriptor, SettingsNamespace, SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 // Value edge: the rename impl narrows the title service's validation failure; the import also resolves `ctx.get('sessionTitle')`.
-import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
+import { collectSessionTitleMessages, foldSessionTitle, SessionTitleInvalidError, truncateTitleUtf8 } from '@deepseek-ai/dsh-session-title'
 import type { CallId } from '@deepseek-ai/dsh-llm/brand'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import type { ApprovalOutcome, ApprovalRequestId } from '@deepseek-ai/dsh-user-approval'
@@ -121,6 +121,10 @@ const SESSION_SEARCH_PROVIDER_CALL_LIMIT = 100
 const COLD_SUMMARY_BATCH_SIZE = 16
 /** Default maximum artifact size eligible for one cold blankness read. */
 export const DEFAULT_COLD_BLANK_PROBE_MAX_BYTES = 1024
+/** Largest cold artifact the title probe may read; larger rows keep their cached title only. */
+export const DEFAULT_COLD_TITLE_PROBE_MAX_BYTES = 2 * 1024 * 1024
+/** UTF-8 byte budget for the list-row first-prompt fallback title. */
+const TITLE_FALLBACK_MAX_BYTES = 80
 
 /** Conversation message event types (the pagination counting unit). */
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
@@ -455,21 +459,53 @@ function applySessionListMetadata(state: SessionListMetadata, event: SessionEven
   const lastPromptAt = event.type === 'user/message' && event.data.source.kind === 'user'
     ? event.time
     : state.lastPromptAt
-  return blank === state.blank && lastPromptAt === state.lastPromptAt
+  // Assistant step messages and turn completions count as activity (each
+  // step message is one whole model response — streaming chunks are a
+  // separate event — so this is the turn-boundary debounce, not a
+  // per-token shuffle). Max keeps replayed or repaired older events from
+  // moving the row backwards.
+  const isActivity = (event.type === 'user/message' && event.data.source.kind === 'user')
+    || event.type === 'assistant/message'
+    || event.type === 'turn/end'
+  const lastActivityAt = isActivity ? Math.max(state.lastActivityAt ?? 0, event.time) : state.lastActivityAt
+  return blank === state.blank
+    && lastPromptAt === state.lastPromptAt
+    && lastActivityAt === state.lastActivityAt
     ? state
-    : { blank, lastPromptAt }
+    : { blank, lastPromptAt, lastActivityAt }
 }
 
 /** Fold exact list metadata for an attached Session. */
 function sessionListMetadata(events: readonly SessionEvent[]): SessionListMetadata {
-  let state: SessionListMetadata = { blank: true, lastPromptAt: null }
+  let state: SessionListMetadata = { blank: true, lastPromptAt: null, lastActivityAt: null }
   for (const event of events) state = applySessionListMetadata(state, event)
   return state
 }
 
-/** Sort by creation or latest human prompt, whichever is newer. */
+/** Sort by creation or latest activity, whichever is newer. */
 function sessionListUpdatedAt(header: SessionHeader, metadata: SessionListMetadata | undefined): number {
-  return Math.max(header.createdAt, metadata?.lastPromptAt ?? 0)
+  return Math.max(header.createdAt, metadata?.lastActivityAt ?? 0)
+}
+
+/** Recovered display-title fields for one list row. */
+interface ColdTitleResult {
+  title?: string
+  titleFallback?: string
+}
+
+/**
+ * Latest logged title plus the truncated first-prompt display fallback for
+ * one event list. Attached sessions fold their in-memory log (zero I/O); the
+ * cold probe reuses the same fold over a bounded read.
+ */
+function titleFields(events: readonly SessionEvent[]): ColdTitleResult {
+  const title = foldSessionTitle(events)?.title
+  const first = collectSessionTitleMessages(events)[0]?.text
+  const titleFallback = first === undefined ? undefined : truncateTitleUtf8(first, TITLE_FALLBACK_MAX_BYTES)
+  return {
+    ...(title === undefined ? {} : { title }),
+    ...(titleFallback === undefined ? {} : { titleFallback }),
+  }
 }
 
 /** Shared Session-header projection for list baselines and creation frames. */
@@ -500,6 +536,7 @@ function summarize(session: Session, running: boolean): SessionSummary {
     running,
     blank: metadata.blank,
     ...sessionListFields(session.header, session.events),
+    ...titleFields(session.events),
   }
 }
 
@@ -538,6 +575,44 @@ async function probeColdSessionMetadata(
     signal?.throwIfAborted()
     ctx.logger.warn(`session.list: blank probe for "${meta.id}" failed (serving it as visible): ${String(error)}`)
     return undefined
+  }
+}
+
+/**
+ * Bounded cold-title recovery: read a cold Session's artifact and fold its
+ * logged title fields, so a stale projection-cache checkpoint (a title that
+ * landed after the last durable write) never leaves the list showing the
+ * workspace name. Gated by the artifact-size budget and never thrown — a
+ * missing, oversized, or unreadable artifact yields an empty result, and the
+ * row keeps whatever the cache already served.
+ */
+async function probeColdTitle(
+  ctx: Context,
+  persistence: SessionPersistence,
+  meta: SessionHeader,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<ColdTitleResult> {
+  const empty: ColdTitleResult = {}
+  if (maxBytes === 0) return empty
+  signal?.throwIfAborted()
+  const location = persistence.locate(meta)
+  if (location === undefined) return empty
+  signal?.throwIfAborted()
+  try {
+    if ((await stat(location.path)).size > maxBytes) return empty
+  } catch {
+    signal?.throwIfAborted()
+    return empty
+  }
+  try {
+    const { events } = await persistence.readFrom(meta.id, 0, signal)
+    signal?.throwIfAborted()
+    return titleFields(events)
+  } catch (error) {
+    signal?.throwIfAborted()
+    ctx.logger.warn(`session.list: title probe for "${meta.id}" failed (serving the row without recovered title fields): ${String(error)}`)
+    return empty
   }
 }
 
@@ -600,6 +675,8 @@ export interface ApiProxyDefaults {
   sessionExportCompressionLevel?: SessionLogCompressionLevel
   /** Maximum artifact size eligible for one cold blankness read. */
   coldBlankProbeMaxBytes?: number
+  /** Maximum artifact size eligible for one cold title recovery read. */
+  coldTitleProbeMaxBytes?: number
   /**
    * Whether handing a path to the native opener can work at all — the
    * `hasDocument` capability the preset roster reports, and the switch
@@ -1049,6 +1126,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     ?? DEFAULT_SESSION_LOG_COMPRESSION_LEVEL
   const coldBlankProbeMaxBytes = defaults.coldBlankProbeMaxBytes
     ?? DEFAULT_COLD_BLANK_PROBE_MAX_BYTES
+  const coldTitleProbeMaxBytes = defaults.coldTitleProbeMaxBytes
+    ?? DEFAULT_COLD_TITLE_PROBE_MAX_BYTES
+  /** One title recovery read per cold session per host run (rows are static once cold). */
+  const coldTitleMemo = new Map<SessionId, ColdTitleResult>()
   /** The seed model each create/resume declares; re-read so it never goes stale. */
   const agentOptions = (): AgentOptions => {
     const { provider, model } = defaults.defaultModelSelection()
@@ -1233,10 +1314,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     projectionCtx.sessionProjections.register<'sessionListMetadata', SessionListMetadata>({
       key: 'sessionListMetadata',
       stateSchema: sessionListMetadataProjectionSchema,
-      init: () => ({ blank: true, lastPromptAt: null }),
+      init: () => ({ blank: true, lastPromptAt: null, lastActivityAt: null }),
       apply: applySessionListMetadata,
       wire: { viewSchema: sessionListMetadataProjectionSchema, view: state => state },
-      stateVersion: 1,
+      stateVersion: 2,
     })
   })
 
@@ -1699,9 +1780,27 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             )
             const attachedSession = ctx.sessions.get(meta.id)
             if (attachedSession !== undefined) return summarizeAttached(attachedSession)
+            // A null cached title may simply postdate the cache's last
+            // checkpoint, and a missing block means no cache row at all;
+            // one bounded log read per host run recovers the logged title.
+            // A block that exists but carries no title key means the cache
+            // predates the title unit — leave the row to the client fallback.
+            let titleResult: ColdTitleResult = {}
+            const cachedTitle = projections?.values.title
+            if (cachedTitle === null || (cachedTitle === undefined && projections === undefined)) {
+              const memo = coldTitleMemo.get(meta.id)
+              if (memo !== undefined) titleResult = memo
+              else {
+                titleResult = await probeColdTitle(ctx, persistence, meta, coldTitleProbeMaxBytes, signal)
+                coldTitleMemo.set(meta.id, titleResult)
+              }
+            } else if (cachedTitle !== undefined) {
+              titleResult = { title: cachedTitle }
+            }
             return {
               ...summary,
               ...projections === undefined ? {} : { projections },
+              ...titleResult,
             }
           }),
         )
@@ -2228,6 +2327,27 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             })
           }
         })
+      },
+
+      async refreshTitle(request) {
+        const { sessionId } = request.payload
+        const found = await agentFor(sessionId)
+        if ('error' in found) return err(request, found.error)
+        const titles = ctx.get('sessionTitle')
+        if (titles === undefined) {
+          return err(request, { code: 'internal', message: 'title regeneration is unavailable: this deployment mounts no session-title service', details: {} })
+        }
+        try {
+          const refreshed = await titles.refresh(found.agent.session)
+          if (refreshed === undefined) return ok(request, { absent: true as const })
+          return ok(request, { title: refreshed.title, seq: refreshed.eventSeq })
+        } catch (error: unknown) {
+          return err(request, {
+            code: 'internal',
+            message: `failed to regenerate the session "${sessionId}" title: ${String(error)}`,
+            details: {},
+          })
+        }
       },
 
       async rename(request) {

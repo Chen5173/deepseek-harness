@@ -112,6 +112,12 @@ export type WorkspaceBrowserInjected = {
   searchResultLimit: number
   /** Rename a Session (explicit user title; resolves on host acceptance). */
   renameSession: (sessionId: SessionId, title: string) => Promise<void>
+  /**
+   * Regenerate a Session's title from its content (provider or built-in
+   * fallback; an automatic revision that does not pin against later
+   * regeneration). Rejects on transport/business failure for toast display.
+   */
+  regenerateSessionTitle: (sessionId: SessionId) => Promise<void>
   /** Fork a Session at its last completed turn and open the child. */
   forkSession: (sessionId: SessionId) => void
   /** Rename a Host Workspace (rejects on name conflict; resolves on durability). */
@@ -137,6 +143,8 @@ export type WorkspaceBrowserInjected = {
   insertSessionBefore: (workspaceId: WorkspaceId, sessionId: SessionId, beforeSessionId?: SessionId) => Promise<void>
   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>
+  /** Open a filesystem path on the Host with its default application (loopback-gated `host.openPath`). */
+  openPath: (path: string) => Promise<void>
 }
 
 /** Full browser props: shell owner share + viewing store + injected actions + the locale seat. */

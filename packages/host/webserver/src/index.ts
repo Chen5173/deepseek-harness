@@ -15,6 +15,7 @@ import type { Duplex } from 'node:stream'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { renderIndexInjections, type IndexInjection } from './injections.ts'
+import { readRequestBody, runAuthGate, type AuthGateRequest } from './auth-gate.ts'
 
 export { renderIndexInjections } from './injections.ts'
 export type { IndexInjection, IndexInjectionPlacement } from './injections.ts'
@@ -55,12 +56,18 @@ export interface WebUpgradeRoute {
   handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>
 }
 
-/** Gateway config: the listen address. */
+/** Gateway config: the listen address plus optional non-loopback authentication. */
 export interface Config {
   /** Listen host; the two supported values are loopback and all-interfaces. */
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /**
+   * When set, non-loopback clients must authenticate: the browser login form
+   * mints an HttpOnly cookie, and automation sends `Authorization: Bearer`.
+   * Loopback sockets always pass. Token alphabet and bounds are schema-owned.
+   */
+  authToken?: string
 }
 
 /**
@@ -74,6 +81,7 @@ export class WebServer extends Service {
   static Config: z<Config> = z.object({
     host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
     port: z.natural().max(65535).required(),
+    authToken: z.string().pattern(/^[A-Za-z0-9._~-]{8,512}$/),
   })
 
   private readonly exact = new Map<string, WebRoute>()
@@ -159,9 +167,55 @@ export class WebServer extends Service {
     }
   }
 
+  /** Extract the gate's request facts from one HTTP message. */
+  private authRequest(req: IncomingMessage): AuthGateRequest {
+    return {
+      headers: req.headers,
+      method: req.method,
+      url: req.url,
+      remoteAddress: req.socket.remoteAddress,
+    }
+  }
+
+  /** Authenticate, match, and dispatch one upgrade; failures destroy the socket. */
+  private async handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    const authResult = await runAuthGate(this.config.authToken, this.authRequest(req), () => Promise.resolve(''))
+    if (authResult !== undefined) {
+      if (socket.writable) socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    let route: WebUpgradeRoute | undefined
+    try {
+      /* v8 ignore next -- node:http always sets url on server requests. */
+      route = this.upgrades.get(new URL(req.url ?? '/', 'http://x').pathname)
+    } catch (error) {
+      this.ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
+      socket.destroy()
+      return
+    }
+    if (route === undefined) {
+      socket.destroy()
+      return
+    }
+    this.upgradedSockets.add(socket)
+    try {
+      await Promise.resolve(route.handler(req, socket, head))
+    } catch (error) {
+      this.ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
+      socket.destroy()
+    }
+  }
+
   /** Listen; resolves once the socket is bound (rejection = FAILED fiber). */
   async [Service.init](): Promise<void> {
     const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      const authResult = await runAuthGate(this.config.authToken, this.authRequest(req), () => readRequestBody(req))
+      if (authResult !== undefined) {
+        res.writeHead(authResult.status, authResult.headers)
+        res.end(authResult.body)
+        return
+      }
       /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server
       requests; the field is only optional on the client-side IncomingMessage type */
       const rawPath = new URL(req.url ?? '/', 'http://x').pathname
@@ -203,29 +257,10 @@ export class WebServer extends Service {
         socket.off('error', onError)
         this.upgradedSockets.delete(socket)
       })
-      let route: WebUpgradeRoute | undefined
-      try {
-        /* v8 ignore next -- node:http always sets url on server requests. */
-        route = this.upgrades.get(new URL(req.url ?? '/', 'http://x').pathname)
-      } catch (error) {
+      this.handleUpgrade(req, socket, head).catch((error: unknown) => {
         this.ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
         socket.destroy()
-        return
-      }
-      if (route === undefined) {
-        socket.destroy()
-        return
-      }
-      this.upgradedSockets.add(socket)
-      try {
-        Promise.resolve(route.handler(req, socket, head)).catch((error: unknown) => {
-          this.ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
-          socket.destroy()
-        })
-      } catch (error) {
-        this.ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
-        socket.destroy()
-      }
+      })
     })
 
     await new Promise<void>((resolve, reject) => {

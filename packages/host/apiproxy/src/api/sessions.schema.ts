@@ -127,6 +127,17 @@ export const sessionRenameValueSchema = z.object({
   seq: z.number().int().nonnegative(),
 }) satisfies z.ZodType<Wire<ResponseValue<'session.rename'>>>
 
+/** session.refreshTitle request payload. */
+export const sessionRefreshTitleRequestSchema = z.object({
+  sessionId: sessionIdSchema,
+}) satisfies z.ZodType<Wire<RequestPayload<'session.refreshTitle'>>>
+
+/** session.refreshTitle response value: the accepted title, or an underivable title. */
+export const sessionRefreshTitleValueSchema = z.union([
+  z.object({ title: z.string().min(1), seq: z.number().int().nonnegative() }),
+  z.object({ absent: z.literal(true) }),
+]) satisfies z.ZodType<Wire<ResponseValue<'session.refreshTitle'>>>
+
 /** session.fork request payload (atSeq anchors the completed-turn cut). */
 export const sessionForkRequestSchema = z.object({
   sessionId: sessionIdSchema,
@@ -219,6 +230,7 @@ export const sessionProjectionsBlockSchema = z.object({
 export const sessionListMetadataProjectionSchema: z.ZodType<SessionListMetadata> = z.object({
   blank: z.boolean(),
   lastPromptAt: z.number().nullable(),
+  lastActivityAt: z.number().nullable(),
 })
 
 /**

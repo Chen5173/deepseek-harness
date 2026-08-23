@@ -663,6 +663,17 @@ describe('createFixtureApi', () => {
     expect(titleFrames[0]).toMatchObject({ seq: acceptedSeq })
   })
 
+  it('session.refreshTitle regenerates from content, reports absent, and rejects unknown ids', async () => {
+    const api = createFixtureApi()
+    const missing = await api.sessions.refreshTitle(req({ sessionId: sid('fx-void') }))
+    expect(missing.result).toMatchObject({ ok: false, error: { code: 'session-not-found', details: { sessionId: 'fx-void' } } })
+
+    const regenerated = await api.sessions.refreshTitle(req({ sessionId: sid('fx-alpha') }))
+    if (!regenerated.result.ok) throw new Error('regenerate failed')
+    if (!('title' in regenerated.result.value)) throw new Error('expected a title')
+    expect(regenerated.result.value.title.length).toBeGreaterThan(0)
+  })
+
   it('workspace.insertSessionBefore moves, appends, no-ops, and rejects invalid ids', async () => {
     const api = createFixtureApi()
     const wsid = 'fx-ws-fixture' as WorkspaceId

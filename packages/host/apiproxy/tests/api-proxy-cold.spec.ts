@@ -13,7 +13,7 @@ import SessionStore from '@deepseek-ai/dsh-session'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import { TypertLookupFailure } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
-import { createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
@@ -93,13 +93,13 @@ describe('sessions.list cold merge', () => {
     ctx.provide('sessionProjectionCache', {
       cachedSnapshot: (meta: SessionHeader) => {
         if (meta.id === sid('small-blank')) {
-          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: null } } }
+          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: null, lastActivityAt: null } } }
         }
         if (meta.id === sid('small-conversation')) {
-          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: 900 } } }
+          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: 900, lastActivityAt: 900 } } }
         }
         if (meta.id === sid('cached-nonblank')) {
-          return { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: 1000 } } }
+          return { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: 1000, lastActivityAt: 1000 } } }
         }
         return undefined
       },
@@ -124,7 +124,9 @@ describe('sessions.list cold merge', () => {
     })
     expect(byId['vanished']).toMatchObject({ blank: false, updatedAt: 600 })
     expect(byId['read-failure']).toMatchObject({ blank: false, updatedAt: 700 })
-    expect(readFrom).toHaveBeenCalledTimes(3)
+    // Three blank probes plus two bounded title probes (the cacheless
+    // large-unknown and broken rows both fail soft on the same read).
+    expect(readFrom).toHaveBeenCalledTimes(5)
     expect(readFrom.mock.calls.map(([id]) => id)).toEqual(expect.arrayContaining([
       sid('small-blank'),
       sid('small-conversation'),
@@ -214,8 +216,8 @@ describe('sessions.list cold merge', () => {
   })
 })
 
-describe('attached updatedAt tracks human prompts', () => {
-  it('ignores pickup and non-prompt work after the latest human message', async () => {
+describe('attached updatedAt tracks prompts and turn activity', () => {
+  it('ignores pickup and lifecycle boundaries but counts turn/end activity', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     await ctx.plugin(UserQuestionService)
@@ -244,14 +246,15 @@ describe('attached updatedAt tracks human prompts', () => {
     const listed = await api.sessions.list(request({}))
     if (!listed.result.ok) throw new Error('list failed')
     const summary = listed.result.value.items.find(item => item.sessionId === 'resumed-untouched')
-    expect(summary?.updatedAt).toBe(worked)
+    // turn/end counts as activity even though no new human prompt arrived.
+    expect(summary?.updatedAt).toBe(worked + 1)
 
-    // A lifecycle boundary is not a human update.
+    // A lifecycle boundary is not an activity update.
     resumed.append('turn/start', { turn: 2 })
     const afterBoundary = await api.sessions.list(request({}))
     if (!afterBoundary.result.ok) throw new Error('list failed')
     expect(afterBoundary.result.value.items.find(item => item.sessionId === 'resumed-untouched')?.updatedAt)
-      .toBe(worked)
+      .toBe(worked + 1)
 
     const prompt = resumed.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'new prompt' }],
@@ -261,6 +264,42 @@ describe('attached updatedAt tracks human prompts', () => {
     if (!after.result.ok) throw new Error('list failed')
     const moved = after.result.value.items.find(item => item.sessionId === 'resumed-untouched')
     expect(moved?.updatedAt).toBe(prompt.time)
+  })
+
+  it('counts an assistant step message as activity', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    await ctx.plugin(AgentRegistry)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+    const session = ctx.sessions.create(sid('assistant-activity'), {
+      seed: [
+        { type: 'turn/start', seq: 0, time: 100, data: { turn: 1 } },
+        {
+          type: 'user/message', seq: 1, time: 120,
+          data: createUserMessage({ content: [{ type: 'text', text: 'do work' }], source: { kind: 'user' } }),
+          surfaceOp: 'append',
+        },
+      ],
+      meta: { cwd: '/proj', createdAt: 100 },
+    })
+    ctx.agents.register({ id: session.id, session, status: 'running', ctx } as Agent)
+
+    const before = await api.sessions.list(request({}))
+    if (!before.result.ok) throw new Error('list failed')
+    expect(before.result.value.items.find(item => item.sessionId === 'assistant-activity')?.updatedAt).toBe(120)
+
+    const message = session.append('assistant/message', {
+      message: createAssistantMessage({
+        content: [{ type: 'text', text: 'done' }],
+        source: { provider: 'p', model: 'm' },
+      }),
+      turn: 1,
+      step: 1,
+    }, { surfaceOp: 'append' })
+    const after = await api.sessions.list(request({}))
+    if (!after.result.ok) throw new Error('list failed')
+    expect(after.result.value.items.find(item => item.sessionId === 'assistant-activity')?.updatedAt).toBe(message.time)
   })
 })
 
@@ -797,5 +836,155 @@ describe('sessions.prompt synchronous rejection', () => {
         details: { reason: 'use subagent delivery for this child session' },
       })
     }
+  })
+})
+
+describe('session.list title resolution', () => {
+  it('recovers the logged title and first-prompt fallback for a cold session whose cached title is null', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    const root = mkdtempSync(join(tmpdir(), 'dsh-cold-title-'))
+    const path = join(root, 'titled.log')
+    writeFileSync(path, 'x')
+    const longFirstPrompt = 'A'.repeat(120)
+    const meta = header('title-cold', 100)
+    const events = [
+      { type: 'session/end-seed', seq: 0, time: 90, data: {} },
+      {
+        type: 'user/message', seq: 1, time: 95,
+        data: createUserMessage({ content: [{ type: 'text', text: longFirstPrompt }], source: { kind: 'user' } }),
+        surfaceOp: 'append',
+      },
+      {
+        type: 'session/title', seq: 2, time: 96,
+        data: { title: 'Sidebar sorting fix', messageSeqs: [1], source: { kind: 'provider', provider: 'p' } },
+      },
+    ] as SessionEvent[]
+    const readFrom = vi.fn(async () => ({ meta, events }))
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      locate: () => ({ kind: 'jsonl', path }),
+      readFrom,
+    } as never)
+    ctx.provide('sessionProjectionCache', {
+      cachedSnapshot: () => ({ asOfSeq: 0, values: { title: null } }),
+    } as never)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const listed = await api.sessions.list(request({}))
+    if (!listed.result.ok) throw new Error('list failed')
+    const item = listed.result.value.items.find(row => row.sessionId === 'title-cold')
+    expect(item?.title).toBe('Sidebar sorting fix')
+    expect(item?.titleFallback).toBe('A'.repeat(80))
+
+    // The probe result is memoized: a second listing serves the title
+    // without a second title read (blank probes keep their own cadence).
+    readFrom.mockImplementation(async () => { throw new Error('title must not be re-read') })
+    const second = await api.sessions.list(request({}))
+    if (!second.result.ok) throw new Error('second list failed')
+    expect(second.result.value.items.find(row => row.sessionId === 'title-cold')?.title).toBe('Sidebar sorting fix')
+  })
+
+  it('serves the fallback alone when no title was ever logged', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    const root = mkdtempSync(join(tmpdir(), 'dsh-cold-fallback-'))
+    const path = join(root, 'untitled.log')
+    writeFileSync(path, 'x')
+    const meta = header('title-absent', 100)
+    const events = [
+      { type: 'session/end-seed', seq: 0, time: 90, data: {} },
+      {
+        type: 'user/message', seq: 1, time: 95,
+        data: createUserMessage({ content: [{ type: 'text', text: 'No title was ever generated for this one' }], source: { kind: 'user' } }),
+        surfaceOp: 'append',
+      },
+    ] as SessionEvent[]
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      locate: () => ({ kind: 'jsonl', path }),
+      readFrom: async () => ({ meta, events }),
+    } as never)
+    // No projection cache at all: the row must still probe.
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const listed = await api.sessions.list(request({}))
+    if (!listed.result.ok) throw new Error('list failed')
+    const item = listed.result.value.items.find(row => row.sessionId === 'title-absent')
+    expect(item?.title).toBeUndefined()
+    expect(item?.titleFallback).toBe('No title was ever generated for this one')
+  })
+
+  it('serves the cached title as the wire title without probing', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    const meta = header('title-cached', 100)
+    const readFrom = vi.fn(async () => { throw new Error('must not read') })
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      locate: () => ({ kind: 'jsonl', path: '/not-read' }),
+      readFrom,
+    } as never)
+    ctx.provide('sessionProjectionCache', {
+      cachedSnapshot: () => ({ asOfSeq: 5, values: { title: 'Cached title' } }),
+    } as never)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const listed = await api.sessions.list(request({}))
+    if (!listed.result.ok) throw new Error('list failed')
+    expect(listed.result.value.items.find(row => row.sessionId === 'title-cached')?.title).toBe('Cached title')
+    expect(readFrom).not.toHaveBeenCalled()
+  })
+
+  it('a failing probe degrades to no recovered fields, never breaks the row', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    const meta2 = header('title-broken', 200)
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta2]),
+      locate: () => ({ kind: 'jsonl', path: '/missing' }),
+      readFrom: async () => { throw new Error('simulated read failure') },
+    } as never)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+    const listed2 = await api.sessions.list(request({}))
+    if (!listed2.result.ok) throw new Error('list failed')
+    const item2 = listed2.result.value.items.find(row => row.sessionId === 'title-broken')
+    expect(item2?.title).toBeUndefined()
+    expect(item2?.titleFallback).toBeUndefined()
+    expect(item2?.blank).toBe(false)
+  })
+
+  it('attaches live title fields to attached sessions without any persistence read', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    await ctx.plugin(AgentRegistry)
+    const session = ctx.sessions.create(sid('title-live'), {
+      seed: [
+        { type: 'turn/start', seq: 0, time: 100, data: { turn: 1 } },
+        {
+          type: 'user/message', seq: 1, time: 120,
+          data: createUserMessage({ content: [{ type: 'text', text: 'Live first prompt text' }], source: { kind: 'user' } }),
+          surfaceOp: 'append',
+        },
+        {
+          type: 'session/title', seq: 2, time: 130,
+          data: { title: 'Live title', messageSeqs: [1], source: { kind: 'user' } },
+        },
+      ],
+      meta: { cwd: '/proj', createdAt: 100 },
+    })
+    ctx.agents.register({ id: session.id, session, status: 'idle', ctx } as Agent)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const listed = await api.sessions.list(request({}))
+    if (!listed.result.ok) throw new Error('list failed')
+    const item = listed.result.value.items.find(row => row.sessionId === 'title-live')
+    expect(item?.title).toBe('Live title')
+    expect(item?.titleFallback).toBe('Live first prompt text')
   })
 })

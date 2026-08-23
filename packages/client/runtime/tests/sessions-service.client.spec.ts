@@ -36,6 +36,7 @@ type FeedRow = {
   running?: boolean
   blank?: boolean
   agentPreset?: string
+  titleFallback?: string
 }
 
 async function feedList(b: Bench, rows: FeedRow[]): Promise<void> {
@@ -46,6 +47,7 @@ async function feedList(b: Bench, rows: FeedRow[]): Promise<void> {
       ...(r.parentId !== undefined ? { parentSessionId: sid(r.parentId) } : {}),
       ...(r.origin !== undefined ? { origin: r.origin } : {}),
       ...(r.agentPreset !== undefined ? { agentPreset: r.agentPreset } : {}),
+      ...(r.titleFallback !== undefined ? { titleFallback: r.titleFallback } : {}),
     })),
   }) as never)
   await b.svc.refresh()
@@ -72,6 +74,17 @@ describe('list store projection', () => {
     expect(state.byId[sid('s2')]?.title).toBeUndefined()
   })
 
+  it('falls back to the host title fallback before the workspace name', async () => {
+    const b = bench()
+    await feedList(b, [
+      { id: 's1', cwd: '/home/u/proj-a/', titleFallback: 'First prompt snippet' },
+      { id: 's2', cwd: '/home/u/proj-a/' },
+    ])
+    const state = b.svc.list.getSnapshot()
+    expect(state.byId[sid('s1')]?.displayTitle).toBe('First prompt snippet')
+    expect(state.byId[sid('s2')]?.displayTitle).toBe('proj-a')
+  })
+
   it('reprojects a blank session whose composition switched and nothing else moved', async () => {
     const b = bench()
     await feedList(b, [{ id: 's1', blank: true, agentPreset: 'standard' }])
@@ -85,6 +98,42 @@ describe('list store projection', () => {
     await Promise.resolve()
 
     expect(b.svc.list.getSnapshot().byId[sid('s1')]?.agentPreset).toBe('minimal')
+  })
+
+  it('promotes updatedAt on assistant and turn-completion frames', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 's1' }, { id: 's2' }])
+    expect(b.svc.list.getSnapshot().byId[sid('s2')]?.updatedAt).toBe(1)
+
+    b.svc.handleMuxEnvelope({
+      rpcId: 'r1' as never,
+      payload: { type: 'session/event', sessionId: sid('s2'), event: { type: 'assistant/message', time: 900, seq: 5, data: {} } } as never,
+    })
+    await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('s2')]?.updatedAt).toBe(900)
+
+    b.svc.handleMuxEnvelope({
+      rpcId: 'r2' as never,
+      payload: { type: 'session/event', sessionId: sid('s2'), event: { type: 'turn/end', time: 950, seq: 6, data: {} } } as never,
+    })
+    await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('s2')]?.updatedAt).toBe(950)
+
+    // An older replayed frame never moves the row backwards.
+    b.svc.handleMuxEnvelope({
+      rpcId: 'r3' as never,
+      payload: { type: 'session/event', sessionId: sid('s2'), event: { type: 'assistant/message', time: 100, seq: 2, data: {} } } as never,
+    })
+    await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('s2')]?.updatedAt).toBe(950)
+
+    // Lifecycle boundaries and turn starts stay silent.
+    b.svc.handleMuxEnvelope({
+      rpcId: 'r4' as never,
+      payload: { type: 'session/event', sessionId: sid('s1'), event: { type: 'turn/start', time: 9999, seq: 6, data: {} } } as never,
+    })
+    await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('s1')]?.updatedAt).toBe(1)
   })
 
   it('reflects live increments (host stream via manager) into the store', async () => {

@@ -85,6 +85,12 @@ export function apply(ctx: ClientContext): void {
       const result = await session.rename(title)
       if (!result.ok) throw new Error(result.error.message)
     },
+    regenerateSessionTitle: async (sessionId) => {
+      const session = ctx.sessions.binding(sessionId)?.session
+      if (session === undefined) throw new Error(`unknown session "${sessionId}"`)
+      const result = await session.regenerateTitle()
+      if (!result.ok) throw new Error(result.error.message)
+    },
     forkSession: (sessionId) => {
       ctx.sessions.fork({ sessionId, increaseTitle: true })
         .then((childId) => { ctx.sessions.open(childId) })
@@ -102,6 +108,13 @@ export function apply(ctx: ClientContext): void {
       await ctx.workspaces.insertSessionBefore(workspaceId, sessionId, beforeSessionId)
     },
     createWorkspace: input => ctx.workspaces.create(input),
+    // Open the workspace directory in the HOST file explorer directly through
+    // the raw RPC — NOT via ctx.workspaces.openPath, which third-party sidebar
+    // plugins (e.g. dsh-better-sidebar) wrap and redirect into their own editor.
+    openPath: async (path) => {
+      const response = await connection.api.host.openPath({ path })
+      if (!response.result.ok) throw new Error(`path open failed: ${response.result.error.message}`)
+    },
     hooks: { directoryFlow: browserFlowSource, hostDescription },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({

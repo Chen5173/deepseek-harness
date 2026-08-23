@@ -49,6 +49,13 @@
   white-space: nowrap;
 }
 
+/* Provider prefix before the model name ('official.', third-party names):
+   same 13/20/500 caption tone as the effort value. */
+.triggerProvider {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-caption);
+}
+
 /* Effort value beside the model name (mock's 'High': same 13/20/500, caption tone). */
 .triggerEffort {
   flex: 0 0 auto;

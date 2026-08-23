@@ -9,6 +9,7 @@ import z from '@deepseek-ai/schemastery'
 import { createUserMessage, BlockAssembler, deepFreeze } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   normalizeSessionTitle,
   SessionTitleProviderId,
@@ -137,6 +138,30 @@ export function resolveSessionTitleLlmConfig(
   return deepFreeze({ ...value })
 }
 
+/** Optional conversation enrichment for one model-backed provider. */
+export interface SessionTitleLlmProviderOptions {
+  /**
+   * Include the session's first textual assistant reply in the framed input
+   * (exchange summarization: the user request plus what the agent answered
+   * about it). The provider waits for that reply up to
+   * {@link SessionTitleLlmProviderOptions.firstReplyWaitMs}.
+   */
+  includeFirstReply?: boolean
+  /** Milliseconds to wait for the first textual assistant reply. @default 30000 */
+  firstReplyWaitMs?: number
+  /**
+   * Frame the whole conversation — every selected human message plus the
+   * assistant replies, in log order — so the title summarizes the session
+   * content instead of the prompts alone. The transcript is bounded by
+   * `maxInputBytes`: when it overflows, the middle is dropped (the first
+   * exchange stays for context and the most recent messages win).
+   */
+  includeAssistantReplies?: boolean
+}
+
+/** How long one title request waits for the first textual assistant reply. */
+const DEFAULT_FIRST_REPLY_WAIT_MS = 30_000
+
 /** Select the provider-owned message subset from one fixed service revision. */
 export type SessionTitleLlmMessageSelector = (
   messages: readonly SessionTitleUserMessage[],
@@ -156,6 +181,7 @@ export function registerSessionTitleLlmProvider(
   id: string,
   automatic: SessionTitleAutomaticMode,
   selectMessages: SessionTitleLlmMessageSelector,
+  options: SessionTitleLlmProviderOptions = {},
 ): void {
   const resolved = resolveSessionTitleLlmConfig(config)
   const titleProvider = SessionTitleProviderId(id)
@@ -163,7 +189,9 @@ export function registerSessionTitleLlmProvider(
     id: titleProvider,
     automatic,
     async generate(request) {
-      return generateSessionTitleWithLlm(ctx, resolved, request, selectMessages(request.messages), titleProvider)
+      return generateSessionTitleWithLlm(
+        ctx, resolved, request, selectMessages(request.messages), titleProvider, options,
+      )
     },
   })
 }
@@ -183,9 +211,12 @@ function resolveRoute(
 }
 
 /** Stable language-aware system instruction shared by both provider plugins. */
-function systemPrompt(config: ResolvedSessionTitleLlmConfig): string {
+function systemPrompt(config: ResolvedSessionTitleLlmConfig, summarizeConversation = false): string {
+  const source = summarizeConversation
+    ? 'by summarizing the conversation (user prompts and assistant replies, in order)'
+    : 'from the supplied human messages'
   return [
-    'Create a concise title for an AI coding-assistant session from the supplied human messages.',
+    `Create a concise title for an AI coding-assistant session ${source}.`,
     'Return only the title on one line, **in plain text of natural language**, with no quotes, prefix, explanation, Markdown, XML, or terminal control codes. No code is allowed.',
     'Use the language of the messages.',
     `Aim for about ${config.targetWords} words in non-CJK languages or ${config.targetCjkCharacters} CJK characters.`,
@@ -193,8 +224,74 @@ function systemPrompt(config: ResolvedSessionTitleLlmConfig): string {
 }
 
 /** Frame exact messages as JSON so user text cannot break structural delimiters. */
-function frameMessages(messages: readonly SessionTitleUserMessage[]): string {
-  return `Generate the session title from this JSON array of human messages:\n${JSON.stringify(messages)}`
+function frameMessages(messages: readonly SessionTitleUserMessage[], firstReply?: string): string {
+  const exchange = {
+    humanMessages: messages,
+    ...(firstReply === undefined ? {} : { assistantReply: firstReply }),
+  }
+  return `Generate the session title from this JSON exchange (the human messages and the assistant's first textual reply):\n${JSON.stringify(exchange)}`
+}
+
+/** One interleaved user/assistant turn in a conversation transcript. */
+interface ConversationTurn {
+  readonly role: 'user' | 'assistant'
+  readonly text: string
+}
+
+/** First text-block content of one user or assistant event. */
+function textBlocksText(content: readonly { type: string; text?: string }[]): string {
+  return content
+    .filter((block): block is { type: 'text'; text: string } => block.type === 'text' && block.text !== undefined)
+    .map(block => block.text)
+    .join(' ')
+}
+
+/**
+ * Build the conversation transcript (user prompts + assistant replies, log
+ * order) for a conversation-summary title. Only the selected human messages
+ * enter as user turns; every assistant message with text enters as a reply.
+ */
+function buildConversationTranscript(
+  session: Session,
+  selectedMessages: readonly SessionTitleUserMessage[],
+): ConversationTurn[] {
+  const selected = new Set(selectedMessages.map(message => message.seq))
+  const transcript: ConversationTurn[] = []
+  for (const event of session.events) {
+    if (event.type === 'user/message' && selected.has(event.seq)) {
+      const text = textBlocksText(event.data.content)
+      if (text.trim() !== '') transcript.push({ role: 'user', text })
+    } else if (event.type === 'assistant/message') {
+      const text = textBlocksText(event.data.message.content)
+      if (text.trim() !== '') transcript.push({ role: 'assistant', text })
+    }
+  }
+  return transcript
+}
+
+/** Frame a conversation transcript as JSON so text cannot break structure. */
+function frameConversation(transcript: readonly ConversationTurn[]): string {
+  return `Generate the session title by summarizing this JSON conversation (user prompts and assistant replies, in order):\n${JSON.stringify({ conversation: transcript })}`
+}
+
+/**
+ * Bound a transcript to `maxBytes` by dropping the middle turns first: the
+ * opening exchange stays for context while the most recent messages win.
+ * A single oversized message falls back to the last turn alone.
+ */
+function fitConversation(
+  transcript: readonly ConversationTurn[],
+  maxBytes: number,
+): ConversationTurn[] {
+  let current = [...transcript]
+  const bytes = (turns: readonly ConversationTurn[]): number => Buffer.byteLength(frameConversation(turns), 'utf8')
+  while (current.length > 1 && bytes(current) > maxBytes) {
+    const mid = Math.floor(current.length / 2)
+    current = current.filter((_turn, index) => index !== mid)
+  }
+  if (bytes(current) <= maxBytes) return current
+  const last = current[current.length - 1]
+  return last === undefined ? [] : [last]
 }
 
 /** Translate terminal finish reasons into an auxiliary-call failure. */
@@ -217,6 +314,60 @@ function finishError(finish: FinishReason): Error | undefined {
   }
 }
 
+/** First text-block content of the first textual assistant message. */
+function firstTextReplyText(events: readonly SessionEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type !== 'assistant/message') continue
+    const content = event.data.message.content
+    const text = content
+      .filter((block): block is Extract<(typeof content)[number], { type: 'text' }> => block.type === 'text')
+      .map(block => block.text)
+      .join(' ')
+    if (text.trim() !== '') return text
+  }
+  return undefined
+}
+
+/**
+ * Resolve the first textual assistant reply, waiting (bounded, abortable)
+ * while the turn that will produce it is still in flight. Absent reply after
+ * the wait resolves to undefined — the caller frames the human messages alone.
+ */
+function firstTextAssistantReply(
+  ctx: Context,
+  request: SessionTitleProviderRequest,
+  waitMs: number,
+): Promise<string | undefined> {
+  const session = request.session
+  const existing = firstTextReplyText(session.events)
+  if (existing !== undefined) return Promise.resolve(existing)
+  const signal = request.signal
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(undefined)
+      return
+    }
+    let settled = false
+    let dispose: () => void = () => {}
+    const finish = (value: string | undefined): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      dispose()
+      resolve(value)
+    }
+    const onAbort = (): void => { finish(undefined) }
+    const timer = setTimeout(() => { finish(undefined) }, Math.min(waitMs, MAX_TIMER_DELAY_MS))
+    signal.addEventListener('abort', onAbort)
+    dispose = ctx.on('session/event', (live: Session, _event: SessionEvent) => {
+      if (live !== session) return
+      const text = firstTextReplyText(session.events)
+      if (text !== undefined) finish(text)
+    })
+  })
+}
+
 /**
  * Generate one title through the shared auxiliary LLM call.
  * @param ctx - context exposing the registered LLM service.
@@ -232,12 +383,22 @@ export async function generateSessionTitleWithLlm(
   request: SessionTitleProviderRequest,
   selectedMessages: readonly SessionTitleUserMessage[],
   titleProvider: SessionTitleProviderId,
+  providerOptions: SessionTitleLlmProviderOptions = {},
 ): Promise<SessionTitleProviderResult> {
   request.signal.throwIfAborted()
   if (selectedMessages.length === 0) {
     throw new Error('session-title-llm: at least one source message is required')
   }
-  const framedInput = frameMessages(selectedMessages)
+  const summarizeConversation = providerOptions.includeAssistantReplies === true
+  const firstReply = summarizeConversation
+    // The transcript already carries every assistant reply; no first-reply wait.
+    ? undefined
+    : providerOptions.includeFirstReply === true
+      ? await firstTextAssistantReply(ctx, request, providerOptions.firstReplyWaitMs ?? DEFAULT_FIRST_REPLY_WAIT_MS)
+      : undefined
+  const framedInput = summarizeConversation
+    ? frameConversation(fitConversation(buildConversationTranscript(request.session, selectedMessages), config.maxInputBytes))
+    : frameMessages(selectedMessages, firstReply)
   const inputBytes = Buffer.byteLength(framedInput, 'utf8')
   if (inputBytes > config.maxInputBytes) {
     throw new Error(`session-title-llm: input is ${inputBytes} bytes, exceeding maxInputBytes ${config.maxInputBytes}`)
@@ -247,7 +408,7 @@ export async function generateSessionTitleWithLlm(
     content: [{ type: 'text', text: framedInput }],
     source: { kind: 'plugin', plugin: 'dsh-session-title-llm' },
   })]
-  const system = systemPrompt(config)
+  const system = systemPrompt(config, summarizeConversation)
   using callDeadline = deadline(request.signal, config.timeoutMs, SESSION_TITLE_TIMEOUT_CODE)
   const options: GenerateOptions = deepFreeze({
     provider: route.provider,

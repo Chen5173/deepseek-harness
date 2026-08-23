@@ -353,6 +353,24 @@ export class Session implements SessionFace {
   }
 
   /**
+   * Regenerate the title: contract session.regenerateTitle 1:1. On success
+   * settle the 'title' projection cell from the response's `{title, seq}`
+   * under the store's higher-seq-wins rule, exactly like {@link rename}.
+   * @returns the regenerate result (accepted title + seq, absent, or error).
+   */
+  async regenerateTitle(): Promise<RpcResult<{ title: string; seq: number } | { absent: true }>> {
+    try {
+      const { result } = await this.api.sessions.refreshTitle({ sessionId: this.sessionId })
+      if (result.ok && 'title' in result.value) {
+        this.projections.apply('title', result.value.title, result.value.seq)
+      }
+      return result
+    } catch (error) {
+      return transportError(error)
+    }
+  }
+
+  /**
    * Execute one slash-command line against this session's agent — pure
    * admission semantics (the host executor durably logs the lifecycle;
    * outcomes render as flow nodes, never as a response echo).

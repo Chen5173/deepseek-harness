@@ -11,8 +11,19 @@ import type { SessionTitleLlmConfig } from '@deepseek-ai/dsh-session-title-llm'
 export const name = 'session-title-first-prompt-llm'
 export const inject = ['sessionTitle', 'llm', 'sessions']
 
-/** Required LLM policy; this plugin adds no defaults. */
-export type Config = SessionTitleLlmConfig
+/** Required LLM policy plus the first-reply exchange option. */
+export type Config = SessionTitleLlmConfig & {
+  /**
+   * Include the session's first textual assistant reply in the framed input:
+   * the title summarizes the user request plus the agent's first answer
+   * instead of the prompt alone. Off by default so standalone mounts keep
+   * the prompt-only behavior; the shipped base bundle opts in.
+   * @default false
+   */
+  includeFirstReply?: boolean
+  /** Milliseconds to wait for that first reply. @default 30000 */
+  firstReplyWaitMs?: number
+}
 /** Loader schema shared with the all-messages provider. */
 /* jscpd:ignore-start -- Loader requires each plugin to export its own statically walkable schema; the field validators remain shared. */
 export const Config: z<Config> = z.object({
@@ -23,6 +34,8 @@ export const Config: z<Config> = z.object({
   timeoutMs: SessionTitleLlmConfigFields.timeoutMs,
   provider: SessionTitleLlmConfigFields.provider,
   model: SessionTitleLlmConfigFields.model,
+  includeFirstReply: z.boolean().default(false),
+  firstReplyWaitMs: z.number().step(1).min(1).default(30_000),
 })
 /* jscpd:ignore-end */
 
@@ -32,9 +45,15 @@ export const Config: z<Config> = z.object({
  * @param config - required route, target, byte, token, and timeout policy.
  */
 export function apply(ctx: Context, config: Config): void {
-  registerSessionTitleLlmProvider(ctx, config, name, 'first-prompt', (messages) => {
+  // The shared register validates only its LLM policy keys; the exchange
+  // options are this plugin's own and pass through the options channel.
+  const { includeFirstReply, firstReplyWaitMs, ...llmConfig } = config
+  registerSessionTitleLlmProvider(ctx, llmConfig, name, 'first-prompt', (messages) => {
     const first = messages[0]
     if (first === undefined) throw new Error('first-prompt title provider requires one human message')
     return [first]
+  }, {
+    includeFirstReply: includeFirstReply ?? false,
+    ...(firstReplyWaitMs === undefined ? {} : { firstReplyWaitMs }),
   })
 }

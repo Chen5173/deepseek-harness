@@ -115,15 +115,18 @@
 
     # ── layer 2: transport/service ──────────────────────────────────────────────
 
-    # Plain route-registration carrier; host and port come from the app's
-    # webStartup provider, with these deployment fallbacks. The dist is served by
-    # the web-runtime row below through the fallback seat.
+    # Plain route-registration carrier; host, port, and the optional
+    # non-loopback auth token come from the app's webStartup provider (with
+    # DSH_WEB_AUTH_TOKEN as the environment fallback), plus these deployment
+    # defaults. The dist is served by the web-runtime row below through the
+    # fallback seat.
     - id: webserver
       name: '@deepseek-ai/dsh-host-webserver'
       inject: [webStartup]
       config:
         host: !!js ctx.webStartup.host ?? '127.0.0.1'
         port: !!js ctx.webStartup.port ?? 3080
+        authToken: !!js ctx.webStartup.authToken ?? process.env.DSH_WEB_AUTH_TOKEN
 
     # Web glue owned by this bundle: resolves the built frontend dist (an
     # assembly fact of dsh-web-app, never user config), mounts the

@@ -72,6 +72,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     searchSessions: vi.fn(async () => ({ items: [], hasMore: false })),
     searchResultLimit: 20,
     renameSession: vi.fn(async () => {}),
+    regenerateSessionTitle: vi.fn(async () => {}),
     forkSession: vi.fn(),
     renameWorkspace: vi.fn(async () => {}),
     deleteWorkspace: vi.fn(async () => {}),
@@ -79,6 +80,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     insertWorkspaceBefore: vi.fn(async () => {}),
     insertSessionBefore: vi.fn(async () => {}),
     createWorkspace: vi.fn(async () => workspace('created', [])),
+    openPath: vi.fn(async () => {}),
     useDirectoryFlow: bindSnapshotSelector({ getSnapshot: () => true, subscribe: () => () => {} }),
     useHostDescription: selector => selector(undefined),
     renderSlot: ((_name: string, owner: { open: boolean }) => (owner.open ? <div data-testid="directory-flow" /> : null)) as never,
@@ -154,7 +156,7 @@ describe('WorkspaceBrowser', () => {
     expect(screen.getByText('分组方式')).toBeTruthy() // the menu heading label
     expect(screen.getByRole('separator')).toBeTruthy()
     expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
-      '按工作区', '单列表', '手动排序', '最近更新',
+      '按工作区', '单列表', '按时间', '手动排序', '最近更新',
     ])
     expect(screen.getByRole('menuitem', { name: '按工作区' }).querySelector('svg')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: '手动排序' }).querySelector('svg')).toBeTruthy()
@@ -178,6 +180,73 @@ describe('WorkspaceBrowser', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('menu')).toBeNull()
     expect(b.store.getSnapshot().groupBy).toBe('workspace')
+  })
+
+  it('switches to the time-bucketed list and hides manual ordering there', () => {
+    const now = Date.now()
+    const sessions = sessionState([
+      summary('fresh', now - 60_000),
+      summary('old', now - 40 * 86_400_000),
+    ])
+    const b = mount({ useSessions: hook(sessions) })
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '按时间' }))
+    expect(b.store.getSnapshot().groupBy).toBe('time')
+    // Today starts expanded; the older bucket is folded to its header.
+    expect(screen.getByText('今天')).toBeTruthy()
+    expect(screen.getByText('更早')).toBeTruthy()
+    expect(screen.getByText('fresh')).toBeTruthy()
+    expect(screen.queryByText('old')).toBeNull()
+    // The order section is hidden: time buckets sort by recency inherently.
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    expect(screen.queryByRole('menuitem', { name: '手动排序' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: '最近更新' })).toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    // Expanding the older bucket reveals its rows.
+    fireEvent.click(screen.getByRole('button', { name: /更早/ }))
+    expect(screen.getByText('old')).toBeTruthy()
+  })
+
+  it('time mode can prefix each row with its owning Workspace via the view-options toggle', () => {
+    const now = Date.now()
+    const sessions = sessionState([
+      summary('fresh', now - 60_000),
+      summary('loose', now - 60_000),
+    ])
+    const b = mount({
+      useSessions: hook(sessions),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['fresh'], 'Alpha')])),
+    })
+    // Row text reads through the nested prefix span (title stays a direct
+    // text node inside its own span, so getByText('fresh') still resolves it).
+    const rowText = (title: string): string =>
+      (screen.getByText(title).closest('[role="treeitem"]') as HTMLElement).textContent ?? ''
+    // The toggle belongs to time mode: it is absent from the grouped menu.
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    expect(screen.queryByRole('menuitem', { name: '显示工作区' })).toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '按时间' }))
+    // Default off: plain titles.
+    expect(rowText('fresh')).not.toContain('[Alpha]')
+    expect(rowText('loose')).not.toContain('[未分组]')
+
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    expect(screen.getByRole('menuitem', { name: '显示工作区' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: '显示工作区' }))
+    expect(b.store.getSnapshot().timeShowWorkspace).toBe(true)
+    // Owned row shows "[Alpha] fresh"; loose sessions fall back to the
+    // ungrouped label (same English constant the search rows use).
+    expect(rowText('fresh')).toContain('[Alpha] fresh')
+    expect(rowText('loose')).toContain('[Ungrouped] loose')
+
+    // Toggling back off restores the bare titles.
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '显示工作区' }))
+    expect(b.store.getSnapshot().timeShowWorkspace).toBe(false)
+    expect(rowText('fresh')).not.toContain('[Alpha]')
+    expect(rowText('loose')).not.toContain('[Ungrouped]')
   })
 
   it('persists flat-list drag order locally and applies Last updated within that account', async () => {
@@ -355,6 +424,32 @@ describe('WorkspaceBrowser', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: '单列表' }))
     expect(screen.getByText('kept-s')).toBeTruthy()
     expect(screen.queryByText('gone-s')).toBeNull()
+  })
+
+  it('opens the workspace directory from the session row menu', async () => {
+    const openPath = vi.fn(async () => {})
+    mount({
+      useSessions: hook(sessionState([summary('dir-s', 2, { cwd: '/w' })])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['dir-s'])])),
+      openPath,
+    })
+    fireEvent.click(screen.getByText('alpha'))
+    fireEvent.click(screen.getByRole('button', { name: '会话“dir-s”的操作' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '打开工作区目录' }))
+    await waitFor(() => { expect(openPath).toHaveBeenCalledWith('/w') })
+  })
+
+  it('hides the folder opener for a session without a workspace root', () => {
+    mount({
+      // In a Workspace group but carrying no cwd on the session row.
+      useSessions: hook(sessionState([summary('loose-s', 2)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['loose-s'])])),
+    })
+    fireEvent.click(screen.getByText('alpha'))
+    // The three-dot menu exists (rename etc.) but carries no folder item.
+    fireEvent.click(screen.getByRole('button', { name: '会话“loose-s”的操作' }))
+    expect(screen.queryByRole('menuitem', { name: '打开工作区目录' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy()
   })
 
   it('logs and keeps the tree when the archive call rejects', async () => {

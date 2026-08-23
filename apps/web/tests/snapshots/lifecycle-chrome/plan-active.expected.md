@@ -34,7 +34,8 @@
   - img
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Plan mode on, press to turn off": Plan
-- button "Select model, current DeepSeek-V4-Flash":
+- button "Select model, current DeepSeek-V4-Flash, provider official":
+  - text: official.
   - text: DeepSeek-V4-Flash
   - img
 - button "Send message" [disabled]

@@ -11,6 +11,8 @@ import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
 // The pure-type outlet: api/ is browser-importable, and the package root's
 // cordis Context merge (via dsh-agent) must not enter client aggregates.
 import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/types'
+// Type-only: brings the 'title' projection key into SessionProjectionMap.
+import type {} from '@deepseek-ai/dsh-session-title/types'
 import type { RpcId, RpcRequest, RpcResponse } from './rpc.ts'
 import type { ToolEventView } from './events.ts'
 import type { WorkspaceId } from './workspace.ts'
@@ -45,6 +47,13 @@ export interface SessionListMetadata {
   blank: boolean
   /** Latest source.kind=user message time in the checkpoint prefix. */
   lastPromptAt: number | null
+  /**
+   * Latest activity time in the checkpoint prefix: the newest of human
+   * prompts, assistant step messages, and turn completions. The list sorts
+   * "recently updated" on this, so work the agent finished also surfaces
+   * the session.
+   */
+  lastActivityAt: number | null
 }
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -205,6 +214,19 @@ export interface SessionSummary {
   /** Session working directory (header.cwd passthrough); absent when unrecorded. */
   cwd?: string
   /**
+   * Latest logged title for display. Attached sessions fold the live log;
+   * cold sessions serve the projection-cache value, with a bounded log probe
+   * recovering it when the cache lacks one. Absent when no title has ever
+   * been logged and none could be read cheaply.
+   */
+  title?: string
+  /**
+   * Truncated first human prompt for display when no title exists — the
+   * fallback between "no title" and the workspace name. Absent when no
+   * eligible prompt exists or none could be read cheaply.
+   */
+  titleFallback?: string
+  /**
    * Agent preset this session's agent was composed from (header passthrough);
    * absent when the deployment composes no presets. A surface offering a
    * switch reads this to show what the session actually runs rather than what
@@ -313,6 +335,15 @@ export interface SessionsApi {
    * title that normalizes to empty fails with `title-invalid`.
    * Session-backed subagents reject with `agent-busy`.
    */
+  /**
+   * Regenerate this session's title from its content: the registered title
+   * provider re-runs (or the built-in fallback materializes when none is
+   * registered). Unlike rename, the result is an automatic revision and does
+   * not pin against later regeneration. Fails only on deployment/liveness
+   * trouble; an underivable title resolves to `{ absent: true }`.
+   */
+  refreshTitle(request: RpcRequest<{ sessionId: SessionId }>):
+  Promise<RpcResponse<{ title: string; seq: number } | { absent: true }>>
   rename(request: RpcRequest<{ sessionId: SessionId; title: string }>):
   Promise<RpcResponse<{ title: string; seq: number }>>
 

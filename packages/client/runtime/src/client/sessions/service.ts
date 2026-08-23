@@ -43,6 +43,8 @@ export interface SessionSummary {
   id: SessionId
   /** Latest durable log-backed title, absent until the host projects one. */
   title?: string
+  /** Truncated first-prompt display fallback (host-computed) for rows without a title. */
+  titleFallback?: string
   /** Human-facing label: durable title, project basename, then session id. */
   displayTitle: string
   cwd?: string
@@ -163,11 +165,17 @@ export function workspaceTitleOf(cwd: string): string {
 }
 
 /**
- * Display title projection: durable title, project directory basename, then
- * the raw id.
+ * Display title projection: durable title, host first-prompt fallback,
+ * project directory basename, then the raw id.
  */
-function displayTitleOf(title: string | undefined, cwd: string | undefined, id: SessionId): string {
+function displayTitleOf(
+  title: string | undefined,
+  titleFallback: string | undefined,
+  cwd: string | undefined,
+  id: SessionId,
+): string {
   if (title !== undefined) return title
+  if (titleFallback !== undefined) return titleFallback
   if (cwd !== undefined && cwd !== '') {
     const base = workspaceTitleOf(cwd)
     if (base !== '') return base
@@ -667,7 +675,7 @@ export class SessionRuntime implements ISessions {
       ids.push(entry.sessionId)
       byId[entry.sessionId] = {
         id: entry.sessionId,
-        displayTitle: displayTitleOf(entry.title, entry.cwd, entry.sessionId),
+        displayTitle: displayTitleOf(entry.title, entry.titleFallback, entry.cwd, entry.sessionId),
         running: entry.running,
         ...(entry.completed ? { completed: true } : {}),
         blank: entry.blank,
@@ -679,6 +687,7 @@ export class SessionRuntime implements ISessions {
           ? {}
           : { projectionValues: entry.projectionValues }),
         ...(entry.title !== undefined ? { title: entry.title } : {}),
+        ...(entry.titleFallback !== undefined ? { titleFallback: entry.titleFallback } : {}),
         ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}),
         ...(entry.parentSessionId !== undefined ? { parentId: entry.parentSessionId } : {}),
         ...(entry.origin !== undefined ? { origin: entry.origin } : {}),

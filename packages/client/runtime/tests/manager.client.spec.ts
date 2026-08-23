@@ -113,14 +113,14 @@ describe('list lifecycle', () => {
     expect(manager.getListSnapshot().items.map(item => item.sessionId)).toEqual([S2, S1])
   })
 
-  it('advances list activity only for direct user messages', async () => {
+  it('advances list activity for prompts, assistant steps, and turn completions', async () => {
     const api = new FakeApiClient()
     api.onList = () => Promise.resolve(ok({ items: [summary(S1)] as never[] }))
     const manager = new SessionManager(api, fakeRemote())
     await manager.refreshList()
 
     // Both a new prompt and an admitted steer land as a user-sourced message.
-    const activity = { ...ev.user(10, 'new'), time: 500 }
+    const activity = { ...ev.user(10, 'new'), time:500 }
     manager.handleMuxEnvelope({
       rpcId: 'activity' as never,
       payload: { type: 'session/event', sessionId: S1, event: activity },
@@ -131,10 +131,13 @@ describe('list lifecycle', () => {
       rpcId: 'older' as never,
       payload: { type: 'session/event', sessionId: S1, event: { ...activity, time: 400 } },
     })
+    // A completed assistant step message counts as activity (turn-boundary
+    // debounce), so the session surfaces without a new human prompt.
     manager.handleMuxEnvelope({
       rpcId: 'assistant' as never,
       payload: { type: 'session/event', sessionId: S1, event: { ...ev.assistant(11, 0, 'reply'), time: 600 } },
     })
+    expect(manager.getListSnapshot().items[0]?.updatedAt).toBe(600)
 
     const injected = ev.user(12, 'context')
     if (injected.type !== 'user/message') throw new Error('user builder returned another event type')
@@ -150,7 +153,8 @@ describe('list lifecycle', () => {
         },
       },
     })
-    expect(manager.getListSnapshot().items[0]?.updatedAt).toBe(500)
+    // Plugin-injected context is not user activity and must not advance the row.
+    expect(manager.getListSnapshot().items[0]?.updatedAt).toBe(600)
   })
 
   it('keeps the error in the list snapshot on failure', async () => {

@@ -11,8 +11,16 @@ import type { SessionTitleLlmConfig } from '@deepseek-ai/dsh-session-title-llm'
 export const name = 'session-title-all-prompts-llm'
 export const inject = ['sessionTitle', 'llm', 'sessions']
 
-/** Required LLM policy; this plugin adds no defaults. */
-export type Config = SessionTitleLlmConfig
+/** Required LLM policy plus the conversation-summary switch. */
+export type Config = SessionTitleLlmConfig & {
+  /**
+   * Frame the whole conversation (user prompts + assistant replies) so the
+   * title summarizes the session content. Off, only the human messages are
+   * framed. Defaults to on — this provider exists to summarize conversations.
+   * @default true
+   */
+  includeAssistantReplies?: boolean
+}
 /** Loader schema shared with the first-prompt provider. */
 /* jscpd:ignore-start -- Loader requires each plugin to export its own statically walkable schema; the field validators remain shared. */
 export const Config: z<Config> = z.object({
@@ -23,6 +31,7 @@ export const Config: z<Config> = z.object({
   timeoutMs: SessionTitleLlmConfigFields.timeoutMs,
   provider: SessionTitleLlmConfigFields.provider,
   model: SessionTitleLlmConfigFields.model,
+  includeAssistantReplies: z.boolean().default(true),
 })
 /* jscpd:ignore-end */
 
@@ -32,5 +41,8 @@ export const Config: z<Config> = z.object({
  * @param config - required route, target, byte, token, and timeout policy.
  */
 export function apply(ctx: Context, config: Config): void {
-  registerSessionTitleLlmProvider(ctx, config, name, 'all-prompts', messages => messages)
+  const { includeAssistantReplies, ...llmConfig } = config
+  registerSessionTitleLlmProvider(ctx, llmConfig, name, 'all-prompts', messages => messages, {
+    includeAssistantReplies: includeAssistantReplies ?? true,
+  })
 }

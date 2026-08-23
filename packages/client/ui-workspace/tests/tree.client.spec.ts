@@ -3,8 +3,8 @@ import type {
   SessionId, SessionListState, SessionSummary, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import {
-  deriveFlat, deriveGroups, deriveSearchResults, workspaceLabel, relativeTime,
-  UNGROUPED_KEY, UNGROUPED_LABEL,
+  deriveFlat, deriveGroups, deriveSearchResults, deriveTimeGroups, timeBucketOf, workspaceLabel, relativeTime,
+  TIME_EXPANSION_PREFIX, UNGROUPED_KEY, UNGROUPED_LABEL,
 } from '../src/client/tree.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
 
@@ -396,14 +396,17 @@ describe('createWorkspaceViewStore', () => {
     const store = createWorkspaceViewStore().create()
     expect(store.getSnapshot().groupBy).toBe('workspace')
     expect(store.getSnapshot().orderBy).toBe('updated')
+    expect(store.getSnapshot().timeShowWorkspace).toBe(false)
     store.actions.setGroupBy('flat')
     store.actions.setOrderBy('updated')
+    store.actions.setTimeShowWorkspace(true)
     store.actions.setGroupExpanded('alpha', true)
     store.actions.syncSessionOrderAccount('alpha', ['two', 'one'], { one: 1, two: 2 })
     store.actions.setSessionOrder('alpha', ['one', 'two'])
     expect(store.getSnapshot().groupBy).toBe('flat')
     expect(store.getSnapshot()).toMatchObject({
       orderBy: 'updated',
+      timeShowWorkspace: true,
       groupExpansion: { alpha: true },
       sessionOrderByAccount: { alpha: ['one', 'two'] },
       sessionUpdatedAtByAccount: { alpha: { one: 1, two: 2 } },
@@ -446,5 +449,120 @@ describe('relativeTime', () => {
     expect(relativeTime(now - 2 * 86_400_000, now)).toEqual({ unit: 'days', n: 2 })
     expect(relativeTime(now - 60 * 86_400_000, now)).toEqual({ unit: 'months', n: 2 })
     expect(relativeTime(0, now)).toEqual({ unit: 'years', n: 1 })
+  })
+})
+describe('deriveTimeGroups', () => {
+  const DAY = 86_400_000
+  // A fixed local-midnight anchor: natural-day buckets are calendar-based.
+  const now = (() => {
+    const d = new Date(2026, 7, 21, 15, 0, 0)
+    return d.getTime()
+  })()
+
+  it('buckets by calendar day and sorts members by recency', () => {
+    const sessions = list(
+      summary('today-old', now - 60 * 60_000),
+      summary('today-new', now - 5 * 60_000),
+      summary('yesterday', now - DAY - 60 * 60_000),
+      summary('week', now - 3 * DAY),
+      summary('month', now - 12 * DAY),
+      summary('older', now - 45 * DAY),
+    )
+    const groups = deriveTimeGroups(sessions, noArchive, now)
+    expect(groups.map(group => group.label)).toEqual(['today', 'yesterday', 'week', 'month', 'older'])
+    expect(groups[0]!.sessions.map(session => session.id)).toEqual([sid('today-new'), sid('today-old')])
+    expect(groups[1]!.sessions.map(session => session.id)).toEqual([sid('yesterday')])
+    expect(groups[0]!.timeBucket).toBe('today')
+    expect(groups[0]!.key).toBe(`${TIME_EXPANSION_PREFIX}today`)
+  })
+
+  it('expands today and yesterday by default and honors explicit overrides', () => {
+    const sessions = list(
+      summary('a', now - 60_000),
+      summary('b', now - DAY - 60_000),
+      summary('c', now - 3 * DAY),
+    )
+    const defaults = deriveTimeGroups(sessions, noArchive, now)
+    expect(defaults.map(group => [group.label, group.expanded])).toEqual([
+      ['today', true], ['yesterday', true], ['week', false],
+    ])
+    const overridden = deriveTimeGroups(sessions, noArchive, now, {
+      [`${TIME_EXPANSION_PREFIX}today`]: false,
+      [`${TIME_EXPANSION_PREFIX}week`]: true,
+    })
+    expect(overridden.map(group => [group.label, group.expanded])).toEqual([
+      ['today', false], ['yesterday', true], ['week', true],
+    ])
+  })
+
+  it('applies the shared visibility rules (blank/archived/subagent) and reports the current bucket', () => {
+    const currentBlank = { ...summary('blank-current', now - 60_000), blank: true }
+    const staleBlank = { ...summary('blank-stale', now - 60_000), blank: true }
+    const child = { ...summary('child', now - 60_000), origin: 'subagent' as const }
+    const archivedOne = summary('archived-one', now - DAY - 60_000)
+    const visible = summary('visible', now - 3 * DAY)
+    const sessions = {
+      ...list(visible, currentBlank, staleBlank, child, archivedOne),
+      current: currentBlank.id,
+    }
+    const groups = deriveTimeGroups(sessions, [archivedOne.id], now, {
+      [`${TIME_EXPANSION_PREFIX}week`]: true,
+    })
+    const ids = groups.flatMap(group => group.sessions.map(session => session.id))
+    expect(ids).toEqual([sid('blank-current'), sid('visible')])
+    expect(groups.find(group => group.containsCurrent)?.label).toBe('today')
+  })
+
+  it('places rows at the calendar boundaries in the intended buckets', () => {
+    const start = new Date(2026, 7, 21, 0, 0, 0).getTime()
+    // Bucket starts are inclusive at local midnight: a row stamped exactly
+    // at a boundary belongs to the newer bucket.
+    expect(timeBucketOf(start - 1, now)).toBe('yesterday')
+    expect(timeBucketOf(start - DAY + 1, now)).toBe('yesterday')
+    expect(timeBucketOf(start - DAY, now)).toBe('yesterday')
+    expect(timeBucketOf(start - DAY - 1, now)).toBe('week')
+    expect(timeBucketOf(start - 7 * DAY + 1, now)).toBe('week')
+    expect(timeBucketOf(start - 7 * DAY, now)).toBe('week')
+    expect(timeBucketOf(start - 7 * DAY - 1, now)).toBe('month')
+    expect(timeBucketOf(start - 30 * DAY, now)).toBe('month')
+    expect(timeBucketOf(start - 30 * DAY - 1, now)).toBe('older')
+  })
+
+  it('buckets rows updated within the last hour as today even across midnight', () => {
+    const midnight = new Date(2026, 7, 21, 0, 0, 0).getTime()
+    const justAfterMidnight = midnight + 20_000
+    // 40 seconds before midnight: the relative label reads "now", so the
+    // bucket must agree (today) instead of hiding it under yesterday.
+    expect(timeBucketOf(midnight - 40_000, justAfterMidnight)).toBe('today')
+    // Five minutes before midnight: "5min" label bucketed as today.
+    expect(timeBucketOf(midnight - 5 * 60_000, justAfterMidnight)).toBe('today')
+    // Fifty-nine minutes before midnight: still inside the recent window.
+    expect(timeBucketOf(midnight - 59 * 60_000, justAfterMidnight)).toBe('today')
+    // Ninety-one minutes before midnight: outside the window -> yesterday.
+    expect(timeBucketOf(midnight - 91 * 60_000, justAfterMidnight)).toBe('yesterday')
+  })
+
+  it('labels each row with its owning Workspace when time mode surfaces context', () => {
+    const owned = summary('owned', now - 60_000, '/projects/alpha')
+    const loose = summary('loose', now - 60_000, '/projects/beta')
+    const noPath = summary('no-path', now - 60_000)
+    const sessions = list(owned, loose, noPath)
+    const groups = deriveTimeGroups(
+      sessions,
+      noArchive,
+      now,
+      {},
+      [
+        workspace('alpha', ['owned'], 'Alpha Workspace'),
+        workspace('gamma', ['unrelated'], 'Gamma'),
+      ],
+    )
+    const byId = new Map(
+      groups.flatMap(group => group.sessions.map(node => [node.id, node.workspace]) as [SessionId, string | undefined][]),
+    )
+    expect(byId.get(owned.id)).toBe('Alpha Workspace')
+    // Loose sessions fall back to their directory basename, then Ungrouped.
+    expect(byId.get(loose.id)).toBe('beta')
+    expect(byId.get(noPath.id)).toBe(UNGROUPED_LABEL)
   })
 })

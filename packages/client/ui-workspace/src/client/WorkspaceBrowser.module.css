@@ -374,6 +374,47 @@
   position: relative;
 }
 
+/* Time-bucket section header: chevron + label + count, full-width toggle. */
+.timeGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.timeGroupHeader:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.timeGroupChevron {
+  transform: rotate(0deg);
+  transition: transform var(--ds-transition-duration-fast, 120ms) var(--ds-ease-in-out, ease-in-out);
+  flex-shrink: 0;
+}
+
+.timeGroupChevronOpen {
+  transform: rotate(90deg);
+}
+
+.timeGroupLabel {
+  flex: 1;
+  text-align: left;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.timeGroupCount {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .groupSection + .groupSection {
   margin-top: 4px;
 }

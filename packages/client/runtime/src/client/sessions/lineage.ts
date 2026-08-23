@@ -17,6 +17,8 @@ export interface TitledSessionSummary extends SessionSummary {
 export interface SessionListEntry {
   sessionId: SessionId
   title?: string
+  /** Truncated first-prompt display fallback (host-computed) for rows without a title. */
+  titleFallback?: string
   updatedAt: number
   running: boolean
   /** Empty-log bit mirrored from the summary; lists hide blank sessions (filtering stays with the consumer). */

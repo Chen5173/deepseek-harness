@@ -44,13 +44,14 @@
         maxTitleBytes: 80
 
     - id: session-title-llm
-      name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
+      name: '@deepseek-ai/dsh-session-title-all-prompts-llm'
       config:
-        targetWords: 5
-        targetCjkCharacters: 10
-        maxInputBytes: 4096
+        targetWords: 12
+        targetCjkCharacters: 24
+        maxInputBytes: 32768
         maxOutputTokens: 64
         timeoutMs: 60000
+        includeAssistantReplies: true
 
     - id: user-questions
       name: '@deepseek-ai/dsh-user-questions'

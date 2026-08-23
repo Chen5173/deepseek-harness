@@ -8,6 +8,7 @@
  * GUI. The text-editor intent never consults the browser.
  */
 
+import { stat } from 'node:fs/promises'
 import { release as osRelease } from 'node:os'
 import { extname } from 'node:path'
 import { runNativeCommand, type NativeCommandRunner } from '@deepseek-ai/dsh-native-command'
@@ -97,8 +98,29 @@ function isWsl(internals: PathOpenerInternals): boolean {
   return (internals.osRelease ?? osRelease()).toLowerCase().includes('microsoft')
 }
 
-/** Open one Windows-resolvable path through its registered desktop application. */
+/** Whether a Windows path resolves to an existing directory (files open with the default app instead). */
+async function isDirectoryPath(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/** Open one Windows-resolvable path: directories land in the file explorer, files use the default app. */
 async function openWindowsPath(path: string, signal: AbortSignal, run: PathOpenerRunner): Promise<void> {
+  // A folder has no meaningful application association; some setups hand it
+  // to a text editor that refuses directories ("… is a directory"). Route
+  // directories to the file explorer through Start-Process, which returns
+  // cleanly (explorer.exe itself detaches and can report a reused exit code).
+  if (await isDirectoryPath(path)) {
+    await run('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `Start-Process explorer.exe -ArgumentList ${powershellLiteral(path)}`,
+    ], signal)
+    return
+  }
   await run('powershell.exe', [
     '-NoProfile',
     '-Command',

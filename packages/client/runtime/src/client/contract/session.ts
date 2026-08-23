@@ -72,6 +72,15 @@ export interface ISession {
    */
   rename(title: string): Promise<RpcResult<{ title: string; seq: number }>>
   /**
+   * Regenerate this session's title from its content: the registered title
+   * provider re-runs (or the built-in fallback materializes when none is
+   * registered). Unlike {@link rename}, the result is an automatic revision
+   * and does not pin against later regeneration.
+   * @returns the accepted title and its event seq, `{ absent: true }` when no
+   *   eligible text exists, or the business error.
+   */
+  regenerateTitle(): Promise<RpcResult<{ title: string; seq: number } | { absent: true }>>
+  /**
    * Extend the history window backwards (older messages pagination).
    * @returns completion; failures land in snapshot.openState/loadingOlder.
    */

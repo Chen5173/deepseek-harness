@@ -179,3 +179,42 @@ describe('SessionTitleService.rename', () => {
     expect(ctx.sessionTitle.get(session)?.source.kind).toBe('user')
   })
 })
+
+describe('SessionTitleService projection-cache checkpoint flush', () => {
+  it('writes the projection-cache checkpoint right after a rename append', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionTitleService, CONFIG)
+    const write = vi.fn(async () => {})
+    ctx.provide('sessionProjectionCache', { write } as never)
+    const session = ctx.sessions.create(SessionId('flush-rename'))
+    ctx.sessionTitle.rename(session, 'Flushed name')
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write).toHaveBeenCalledWith(session)
+    await settle()
+  })
+
+  it('writes the checkpoint after the deterministic fallback append', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionTitleService, CONFIG)
+    const write = vi.fn(async () => {})
+    ctx.provide('sessionProjectionCache', { write } as never)
+    const session = ctx.sessions.create(SessionId('flush-fallback'))
+    session.append('turn/start', { turn: 1 })
+    appendHumanPrompt(session, 'Derivable fallback prompt')
+    await settle()
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write).toHaveBeenCalledWith(session)
+    expect(ctx.sessionTitle.get(session)?.title).toBe('Derivable fallback prompt')
+  })
+
+  it('does nothing when no projection cache is composed', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionTitleService, CONFIG)
+    const session = ctx.sessions.create(SessionId('flush-absent-cache'))
+    expect(() => ctx.sessionTitle.rename(session, 'Still fine')).not.toThrow()
+    await settle()
+  })
+})
