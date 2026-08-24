@@ -1,0 +1,400 @@
+diff --git a/README.md b/README.md
+index e44f804..38b894d 100644
+--- a/README.md
++++ b/README.md
+@@ -240,6 +240,15 @@ AK/SK 获取：火山引擎控制台 → 右上角账号头像 → API 访问密
+ - **Client 半边**（浏览器）：`settings.section`（设置页）、`conversation.composer.dock`（读数条）、`shell.overlay`（可拖动悬浮按钮）三个 Slot 注册；包内共享状态 store，任一入口刷新全部视图立即同步；倒计时每秒本地 tick。
+ - **数据流**：Client ⇄ Host 仅通过 Package 私有 JSON RPC，返回值全部为自有纯数据（无活体服务对象）。
+ 
++### 更新记录
++
++- **v0.2.1**（2025）：修复「保存/刷新后偶发显示 500」——
++  - 插件显式声明 inject 依赖（credentials / settings / fs），消除激活顺序竞态——之前未声明依赖时，插件可能在 credentials 服务就绪前被激活，保存火山密钥会间歇性报「credentials 服务不可用」；
++  - 写火山 AK/SK 到凭据文件增加有限重试（只重试快速失败，如 Windows 下文件占用/杀软导致的 EPERM/EBUSY）；
++  - 刷新失败时保留上次成功抓取的余额/额度并标记 stale，页面不再被上游偶发 500 清空，卡片会显示「⚠ 刷新失败：…（显示上次数据）」；
++  - 前端解析错误响应体，显示真实原因（如「保存失败: …」），不再退化成裸 500；
++  - 三个 UI 入口的刷新在客户端合并为一次。
++
+ ### 已知限制
+ 
+ - 动态插件为进程级：DSH 重启后需重新 define + run。
+diff --git a/client.js b/client.js
+index 2308061..1f85458 100644
+--- a/client.js
++++ b/client.js
+@@ -47,8 +47,14 @@ return {
+     function loadCached() {
+       host.call('get-status', {}).then(setStore).catch((e) => setStore({ error: String(e && e.message) }))
+     }
++    // 三个 UI（设置页/读数条/悬浮按钮）挂载时都会触发刷新，这里在客户端合并成一次，
++    // 避免同一瞬间发多个 refresh（宿主虽有 inFlight 去重，但少发一次是一分稳）。
++    let refreshPromise = null
+     function forceRefresh() {
+-      return host.call('refresh', {}).then(setStore).catch((e) => setStore({ error: String(e && e.message) }))
++      if (refreshPromise !== null) return refreshPromise
++      refreshPromise = host.call('refresh', {}).then((s) => { setStore(s); return s }, (e) => { setStore({ error: String(e && e.message) }); return null })
++      refreshPromise.then(() => { refreshPromise = null }, () => { refreshPromise = null })
++      return refreshPromise
+     }
+ 
+     function fmtCountdown(ms) {
+@@ -94,6 +100,7 @@ return {
+         React.createElement('div', { className: 'dshbal-title' }, 'DeepSeek 官方 API'),
+         rows.length ? rows : React.createElement('div', { className: 'dshbal-muted' }, '无余额数据'),
+         React.createElement('div', { className: 'dshbal-muted', style: { marginTop: 6 } }, ds.isAvailable ? '✓ 账户可用' : '账户不可用'),
++        ds.stale && ds.error ? React.createElement('div', { className: 'dshbal-muted', style: { marginTop: 6 } }, '⚠ 刷新失败：' + ds.error + '（显示上次数据）') : null,
+       )
+     }
+ 
+@@ -107,7 +114,8 @@ return {
+       const head = React.createElement('div', { className: 'dshbal-title' }, '火山方舟 Coding Plan')
+       const configured = (keys && keys.volc) || (volc && volc.keysPresent)
+       const sections = []
+-      if (volc.error) sections.push(React.createElement('div', { key: 'err', className: 'dshbal-err', style: { marginTop: 4 } }, volc.error))
++      if (volc.error && !volc.ok) sections.push(React.createElement('div', { key: 'err', className: 'dshbal-err', style: { marginTop: 4 } }, volc.error))
++      if (volc.stale && volc.error) sections.push(React.createElement('div', { key: 'stale', className: 'dshbal-muted', style: { marginTop: 4 } }, '⚠ 刷新失败：' + volc.error + '（显示上次数据）'))
+       for (const plan of volc.plans || []) {
+         if (plan.error) { sections.push(React.createElement('div', { key: plan.product, className: 'dshbal-err', style: { marginTop: 8 } }, plan.product + '：' + plan.error)); continue }
+         if (!plan.periods || !plan.periods.length) continue
+@@ -135,9 +143,11 @@ return {
+         setMsg('')
+         host.call('set-volc-keys', { ak: ak, sk: sk }).then((s) => {
+           setStore(s)
+-          const err = s && s.error
+-          if (err) setMsg(err)
+-          else { setMsg(ak ? '已保存并刷新 ✓' : '已清除并刷新 ✓'); setAk(''); setSk('') }
++          if (s && s.error) { setMsg(String(s.error)); return }
++          const staleWarn = s && s.volc && s.volc.stale && s.volc.error
++          setMsg(ak ? (staleWarn ? '已保存并刷新 ✓（额度查询暂失败，将自动重试）' : '已保存并刷新 ✓') : '已清除并刷新 ✓')
++          setAk('')
++          setSk('')
+         }).catch((e) => setMsg(String(e && e.message))).finally(() => setBusy(false))
+       }
+       const clear = () => {
+diff --git a/host.js b/host.js
+index 26837f8..8adbd73 100644
+--- a/host.js
++++ b/host.js
+@@ -8,7 +8,10 @@
+  * 用法：将本文件内容作为 cordis_define 的 code.host 传入。
+  */
+ return {
+-  inject: ['timer'],
++  // 显式声明依赖：Cordis 按“服务可用才激活”调度，若不声明 credentials/settings/fs，
++  // 插件可能在它们就绪前被激活，导致 ctx.get('credentials') 为 undefined，
++  // 保存火山密钥时间歇性报「credentials 服务不可用」。
++  inject: ['timer', 'credentials', 'settings', 'fs'],
+   apply(ctx) {
+     const fsSvc = ctx.get('fs')
+     const settingsSvc = ctx.get('settings')
+@@ -18,6 +21,8 @@ return {
+ 
+     const cwdHint = sandboxPolicySvc !== undefined ? sandboxPolicySvc.workspaceRoot : 'C:\\'
+     const state = { deepseek: null, volc: null, at: 0, keys: null }
++    // 最近一次成功抓取的数据：上游偶发失败时用它顶住页面，避免正确余额/额度被 500 清空
++    const lastGood = { deepseek: null, volc: null }
+     let inFlight = null
+     let nodeExe = ''
+ 
+@@ -230,15 +235,55 @@ return {
+       }
+     }
+ 
++    // 对写凭据这类会偶发失败的 IO 做有限重试：只重试“快速失败”（如 Windows 上
++    // 文件被占用/杀软导致的 EPERM/EBUSY）；慢失败（如凭据文件跨进程锁等待超时）
++    // 重试也拿不到锁，直接上抛，避免把 30s 锁等待放大到 90s+。
++    async function withRetry(fn, tries, baseDelayMs) {
++      let lastErr
++      for (let i = 0; i < tries; i += 1) {
++        const started = Date.now()
++        try {
++          return await fn()
++        } catch (e) {
++          lastErr = e
++          const slow = Date.now() - started > 5000
++          if (i < tries - 1 && !slow) {
++            await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)))
++          }
++        }
++      }
++      throw lastErr
++    }
++
++    // 合并一次抓取结果：成功则记录为 lastGood；失败则尽量保留上次成功数据并标记 stale，
++    // 只有从未成功过（或没有可保留的数据）时才把错误结果放进 state。
++    function mergeState(key, fresh) {
++      if (fresh && fresh.ok) {
++        lastGood[key] = fresh
++        state[key] = fresh
++        return true
++      }
++      const keep = lastGood[key]
++      if (keep) {
++        const merged = { ...keep, stale: true, error: fresh && fresh.error ? fresh.error : '' }
++        if (key === 'volc' && fresh && typeof fresh.keysPresent === 'boolean') merged.keysPresent = fresh.keysPresent
++        state[key] = merged
++      } else {
++        state[key] = fresh
++      }
++      return false
++    }
++
+     async function refresh() {
+       if (inFlight !== null) return inFlight
+       inFlight = (async () => {
+         const creds = await readCredentials()
+         state.keys = { deepseek: !!creds.deepseekKey, volc: !!(creds.volcAk && creds.volcSk) }
+         const results = await Promise.all([fetchDeepSeek(creds), fetchVolc(creds)])
+-        state.deepseek = results[0]
+-        state.volc = results[1]
+-        state.at = Math.max(results[0].at || 0, results[1].at || 0, 0)
++        const okDeep = mergeState('deepseek', results[0])
++        const okVolc = mergeState('volc', results[1])
++        const freshAt = Math.max(okDeep ? (results[0].at || 0) : 0, okVolc ? (results[1].at || 0) : 0)
++        if (freshAt > 0) state.at = freshAt
+         return snapshot()
+       })().catch((e) => {
+         return { error: '刷新失败: ' + String(e && e.message) }
+@@ -259,13 +304,14 @@ return {
+       if ((ak && !sk) || (!ak && sk)) return { ok: false, error: 'AK 与 SK 需要同时填写或同时留空' }
+       try {
+         if (ak && sk) {
+-          await credSvc.set('VOLC_ACCESS_KEY', ak)
+-          await credSvc.set('VOLC_SECRET_KEY', sk)
++          await withRetry(() => credSvc.set('VOLC_ACCESS_KEY', ak), 3, 250)
++          await withRetry(() => credSvc.set('VOLC_SECRET_KEY', sk), 3, 250)
+         } else {
+-          await credSvc.unset('VOLC_ACCESS_KEY')
+-          await credSvc.unset('VOLC_SECRET_KEY')
++          await withRetry(() => credSvc.unset('VOLC_ACCESS_KEY'), 3, 250)
++          await withRetry(() => credSvc.unset('VOLC_SECRET_KEY'), 3, 250)
+         }
+       } catch (e) {
++        ctx.logger.warn('billing-balance: 保存火山密钥失败: ' + String(e && e.message))
+         return { ok: false, error: '保存失败: ' + String(e && e.message) }
+       }
+       await refresh()
+diff --git a/index.js b/index.js
+index e176888..b3c91d8 100644
+--- a/index.js
++++ b/index.js
+@@ -10,7 +10,10 @@
+ import { createHash, createHmac } from 'node:crypto'
+ 
+ export const name = 'billing-balance'
+-export const inject = ['webServer']
++// 必须显式声明依赖：Cordis 按“服务可用才激活”调度，若不声明 credentials/settings/fs，
++// 插件可能在它们就绪前被激活，导致 ctx.get('credentials') 为 undefined，
++// 保存火山密钥时间歇性报「credentials 服务不可用」。
++export const inject = ['webServer', 'credentials', 'settings', 'fs']
+ 
+ function sha256hex(s) {
+   return createHash('sha256').update(s, 'utf8').digest('hex')
+@@ -53,12 +56,34 @@ function readBody(req, cap) {
+   })
+ }
+ 
++// 对写凭据这类会偶发失败的 IO 做有限重试：只重试“快速失败”（如 Windows 上
++// 文件被占用/杀软导致的 EPERM/EBUSY）；慢失败（如凭据文件跨进程锁等待超时）
++// 重试也拿不到锁，直接上抛，避免把 30s 锁等待放大到 90s+。
++async function withRetry(fn, tries, baseDelayMs) {
++  let lastErr
++  for (let i = 0; i < tries; i += 1) {
++    const started = Date.now()
++    try {
++      return await fn()
++    } catch (e) {
++      lastErr = e
++      const slow = Date.now() - started > 5000
++      if (i < tries - 1 && !slow) {
++        await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)))
++      }
++    }
++  }
++  throw lastErr
++}
++
+ export function apply(ctx) {
+   const credSvc = ctx.get('credentials')
+   const settingsSvc = ctx.get('settings')
+   const fsSvc = ctx.get('fs')
+ 
+   const state = { deepseek: null, volc: null, at: 0, keys: null, region: 'cn-beijing' }
++  // 最近一次成功抓取的数据：上游偶发失败时用它顶住页面，避免正确余额/额度被 500 清空
++  const lastGood = { deepseek: null, volc: null }
+   let inFlight = null
+ 
+   async function readCredentials() {
+@@ -223,6 +248,25 @@ export function apply(ctx) {
+     }
+   }
+ 
++  // 合并一次抓取结果：成功则记录为 lastGood；失败则尽量保留上次成功数据并标记 stale，
++  // 只有从未成功过（或没有可保留的数据）时才把错误结果放进 state。
++  function mergeState(key, fresh) {
++    if (fresh && fresh.ok) {
++      lastGood[key] = fresh
++      state[key] = fresh
++      return true
++    }
++    const keep = lastGood[key]
++    if (keep) {
++      const merged = { ...keep, stale: true, error: fresh && fresh.error ? fresh.error : '' }
++      if (key === 'volc' && fresh && typeof fresh.keysPresent === 'boolean') merged.keysPresent = fresh.keysPresent
++      state[key] = merged
++    } else {
++      state[key] = fresh
++    }
++    return false
++  }
++
+   async function refresh() {
+     if (inFlight !== null) return inFlight
+     inFlight = (async () => {
+@@ -230,9 +274,10 @@ export function apply(ctx) {
+       state.region = creds.region || 'cn-beijing'
+       state.keys = { deepseek: !!creds.deepseekKey, volc: !!(creds.volcAk && creds.volcSk) }
+       const results = await Promise.all([fetchDeepSeek(creds), fetchVolc(creds)])
+-      state.deepseek = results[0]
+-      state.volc = results[1]
+-      state.at = Math.max(results[0].at || 0, results[1].at || 0, 0)
++      const okDeep = mergeState('deepseek', results[0])
++      const okVolc = mergeState('volc', results[1])
++      const freshAt = Math.max(okDeep ? (results[0].at || 0) : 0, okVolc ? (results[1].at || 0) : 0)
++      if (freshAt > 0) state.at = freshAt
+       return snapshot()
+     })().catch((e) => {
+       return { error: '刷新失败: ' + String(e && e.message) }
+@@ -284,13 +329,14 @@ export function apply(ctx) {
+         }
+         try {
+           if (ak && sk) {
+-            await credSvc.set('VOLC_ACCESS_KEY', ak)
+-            await credSvc.set('VOLC_SECRET_KEY', sk)
++            await withRetry(() => credSvc.set('VOLC_ACCESS_KEY', ak), 3, 250)
++            await withRetry(() => credSvc.set('VOLC_SECRET_KEY', sk), 3, 250)
+           } else {
+-            await credSvc.unset('VOLC_ACCESS_KEY')
+-            await credSvc.unset('VOLC_SECRET_KEY')
++            await withRetry(() => credSvc.unset('VOLC_ACCESS_KEY'), 3, 250)
++            await withRetry(() => credSvc.unset('VOLC_SECRET_KEY'), 3, 250)
+           }
+         } catch (e) {
++          ctx.logger.warn('billing-balance: 保存火山密钥失败: ' + String(e && e.message))
+           return json(res, 500, { ok: false, error: '保存失败: ' + String(e && e.message) })
+         }
+         await refresh()
+diff --git a/lib/client.js b/lib/client.js
+index 0622cc5..51c3dbc 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -10,21 +10,29 @@ window.__ModuleLoader__.load({
+     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
+     var React = require('react')
+ 
++    function apiErrorText(r) {
++      return r.text().then(function (text) {
++        try {
++          var b = JSON.parse(text)
++          if (b && b.error) return String(b.error)
++        } catch (e) { /* 非 JSON 响应，退回状态码描述 */ }
++        return 'HTTP ' + String(r.status) + (text ? ': ' + text.slice(0, 200) : '')
++      })
++    }
+     function apiGet(url) {
+       return fetch(url).then(function (r) {
+-        if (!r.ok) throw new Error(String(r.status))
+-        return r.json()
++        if (r.ok) return r.json()
++        return apiErrorText(r).then(function (m) { throw new Error(m) })
+       })
+     }
+-
+     function apiPost(url, body) {
+       return fetch(url, {
+         method: 'POST',
+         headers: body === null || body === undefined ? undefined : { 'content-type': 'application/json' },
+         body: body === null || body === undefined ? undefined : JSON.stringify(body),
+       }).then(function (r) {
+-        if (!r.ok) throw new Error(String(r.status))
+-        return r.json()
++        if (r.ok) return r.json()
++        return apiErrorText(r).then(function (m) { throw new Error(m) })
+       })
+     }
+ 
+@@ -79,8 +87,20 @@ window.__ModuleLoader__.load({
+     function loadCached() {
+       API.getStatus().then(setStore).catch(function (e) { setStore({ error: String(e && e.message) }) })
+     }
++    // 三个 UI（设置页/读数条/悬浮按钮）挂载时都会触发刷新，这里在客户端合并成一次，
++    // 避免同一瞬间发多个 POST /refresh（服务端虽有 inFlight 去重，但少发一次是一分稳）。
++    var refreshPromise = null
+     function forceRefresh() {
+-      return API.refresh().then(setStore).catch(function (e) { setStore({ error: String(e && e.message) }) })
++      if (refreshPromise !== null) return refreshPromise
++      refreshPromise = API.refresh().then(function (s) {
++        setStore(s)
++        return s
++      }, function (e) {
++        setStore({ error: String(e && e.message) })
++        return null
++      })
++      refreshPromise.then(function () { refreshPromise = null }, function () { refreshPromise = null })
++      return refreshPromise
+     }
+ 
+     function fmtCountdown(ms) {
+@@ -142,7 +162,9 @@ window.__ModuleLoader__.load({
+         React.createElement('div', { className: 'dshbal-title' }, 'DeepSeek 官方 API'),
+         rows.length ? rows : React.createElement('div', { className: 'dshbal-muted' }, '无余额数据'),
+         React.createElement('div', { className: 'dshbal-muted', style: { marginTop: 6 } },
+-          ds.isAvailable ? '✓ 账户可用' : '账户不可用'))
++          ds.isAvailable ? '✓ 账户可用' : '账户不可用'),
++        ds.stale && ds.error ? React.createElement('div', { className: 'dshbal-muted', style: { marginTop: 6 } },
++          '⚠ 刷新失败：' + ds.error + '（显示上次数据）') : null)
+     }
+ 
+     function VolcCard(props) {
+@@ -162,9 +184,13 @@ window.__ModuleLoader__.load({
+       var head = React.createElement('div', { className: 'dshbal-title' }, '火山方舟 Coding Plan')
+       var configured = (keys && keys.volc) || (volc && volc.keysPresent)
+       var sections = []
+-      if (volc.error) {
++      if (volc.error && !volc.ok) {
+         sections.push(React.createElement('div', { key: 'err', className: 'dshbal-err', style: { marginTop: 4 } }, volc.error))
+       }
++      if (volc.stale && volc.error) {
++        sections.push(React.createElement('div', { key: 'stale', className: 'dshbal-muted', style: { marginTop: 4 } },
++          '⚠ 刷新失败：' + volc.error + '（显示上次数据）'))
++      }
+       for (var pi = 0; pi < (volc.plans || []).length; pi++) {
+         var plan = volc.plans[pi]
+         if (plan.error) {
+@@ -198,9 +224,11 @@ window.__ModuleLoader__.load({
+         setMsg('')
+         API.setVolcKeys(ak, sk).then(function (s) {
+           setStore(s)
+-          var err = s && s.error
+-          if (err) setMsg(err)
+-          else { setMsg(ak ? '已保存并刷新 ✓' : '已清除并刷新 ✓'); setAk(''); setSk('') }
++          if (s && s.error) { setMsg(String(s.error)); return }
++          var staleWarn = s && s.volc && s.volc.stale && s.volc.error
++          setMsg(ak ? (staleWarn ? '已保存并刷新 ✓（额度查询暂失败，将自动重试）' : '已保存并刷新 ✓') : '已清除并刷新 ✓')
++          setAk('')
++          setSk('')
+         }).catch(function (e) { setMsg(String(e && e.message)) }).finally(function () { setBusy(false) })
+       }
+       var clear = function () {
+diff --git a/package.json b/package.json
+index 64ecb55..6b24a1f 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "dsh-billing-balance",
+-  "version": "0.2.0",
++  "version": "0.2.1",
+   "description": "DeepSeek Harness (dsh) 模型余额插件：DeepSeek 官方 API 余额 + 火山方舟 Coding/Agent Plan 额度窗口（5小时/周/月）与重置倒计时显示。",
+   "type": "module",
+   "main": "index.js",

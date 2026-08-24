@@ -1,0 +1,43 @@
+# Oh-My-Dsh Web public deployment.
+# - dsh-web: this repo's web app (built from my-custom/Dockerfile), bound to
+#   the local loopback on 3080 and gated by DSH_WEB_AUTH_TOKEN for non-loopback.
+# - cloudflared: free public tunnel (trycloudflare) so the web app is reachable
+#   from the internet at https://<random>.trycloudflare.com.
+#
+# start.sh orchestrates the required env via my-custom/.env:
+#   DSH_WEB_AUTH_TOKEN  authorization code (授权码) for remote access
+#   DSH_TRUSTED_HOST    tunnel hostname, needed by the /api trust fence
+# Compose auto-loads .env from the compose-file directory.
+
+services:
+  dsh-web:
+    build:
+      context: ..
+      dockerfile: my-custom/Dockerfile
+    image: oh-my-dsh-web:local
+    container_name: oh-my-dsh-web
+    environment:
+      DSH_HOME: /data
+      # Authorization code for remote access (required, set by start.sh).
+      DSH_WEB_AUTH_TOKEN: ${DSH_WEB_AUTH_TOKEN:?run my-custom/start.sh to set DSH_WEB_AUTH_TOKEN}
+      # Public tunnel hostname so /api accepts the public Host header.
+      DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:-}
+    ports:
+      - "127.0.0.1:3080:3080"
+    volumes:
+      - ./dsh-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # No depends_on: start.sh starts the tunnel first, reads the public URL,
+  # then starts web with --trusted-host. cloudflared retries until web is up.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: oh-my-dsh-tunnel
+    command: tunnel --url http://dsh-web:3080
+    restart: unless-stopped

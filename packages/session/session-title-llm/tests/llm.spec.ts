@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
-import LlmRuntime, { createAssistantMessage, createUserMessage, CallId, isAgentLoopRequest, LlmAdapter  } from '@deepseek-ai/dsh-llm'
-import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createAssistantMessage, createUserMessage, CallId, isAgentLoopRequest, LlmAdapter, ReasoningEffortId  } from '@deepseek-ai/dsh-llm'
+import type { FinishReason, GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import type { SessionTitleProviderRequest } from '@deepseek-ai/dsh-session-title'
@@ -27,6 +27,21 @@ class RecordingAdapter extends LlmAdapter {
     this.onDispatch?.()
     this.requests.push(options)
     yield * this.script
+  }
+}
+
+/** Recording adapter that advertises a single `off` reasoning effort. */
+class ReasoningRecordingAdapter extends RecordingAdapter {
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    return Promise.resolve({
+      provider,
+      id: model,
+      name: model,
+      reasoning: {
+        efforts: [{ id: ReasoningEffortId('off'), name: 'off' }],
+        defaultEffort: ReasoningEffortId('off'),
+      },
+    })
   }
 }
 
@@ -171,6 +186,27 @@ describe('generateSessionTitleWithLlm', () => {
         messages: options.messages,
         maxTokens: 32,
       })
+  })
+
+  it('passes an explicitly configured reasoning effort to the title call and records it', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(LlmRuntime)
+    const adapter = new ReasoningRecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['current-route'], adapter)
+    const providerRequest = request(ctx)
+
+    await generateSessionTitleWithLlm(
+      ctx,
+      resolveSessionTitleLlmConfig({ ...CONFIG, reasoningEffort: ReasoningEffortId('off') }),
+      providerRequest,
+      providerRequest.messages,
+      TITLE_PROVIDER,
+    )
+
+    expect(adapter.requests[0]?.reasoningEffort).toBe('off')
+    expect(providerRequest.session.events.findLast(event => event.type === 'session/title-llm-request')?.data)
+      .toMatchObject({ reasoningEffort: 'off' })
   })
 
   it('frames a conversation transcript (user + assistant replies) when includeAssistantReplies is set', async () => {

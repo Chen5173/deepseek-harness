@@ -1,0 +1,4 @@
+.env
+.dsh-auth
+.dsh-tunnel-url
+dsh-data/

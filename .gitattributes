@@ -8,6 +8,10 @@
 
 *.pdf binary
 
+# Vendored third-party plugins keep their upstream files byte-for-byte;
+# skip the whitespace gate for them (upstream may carry trailing spaces).
+my-custom/vendor-plugins/** -whitespace
+
 # Pairing records are generated from the three confirmed owner-blob pairs.
 # The worktree-local installer registers the fail-closed driver command.
 *.i18n.yaml merge=dsh-translation-pairing

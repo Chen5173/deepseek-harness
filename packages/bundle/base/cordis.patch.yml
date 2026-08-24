@@ -49,8 +49,11 @@
         targetWords: 12
         targetCjkCharacters: 24
         maxInputBytes: 32768
-        maxOutputTokens: 64
+        maxOutputTokens: 128
         timeoutMs: 60000
+        # Titles don't need deep reasoning: keep the auxiliary call at minimal
+        # effort so a reasoning model cannot burn the output-token cap thinking.
+        reasoningEffort: off
         includeAssistantReplies: true
 
     - id: user-questions

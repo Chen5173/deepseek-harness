@@ -1,0 +1,42 @@
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "dsh-context",
+        "@huanlin/dsh-plugin-session-delete",
+        "@linxin666/dsh-web-ui-all",
+        "@liustack/modlens",
+        "@opendsh/dsh-plugin-setting-mcp",
+        "@tt-a1i/archify-dsh",
+        "dsh-at-file",
+        "dsh-chat-import",
+        "dsh-keyboard-history",
+        "dsh-notification",
+        "dsh-session-manager",
+        "dsh-status-rotator",
+        "dshmarket",
+        "dsh-billing-balance"
+      ]
+    }
+  },
+  "dependencies": {
+    "@huanlin/dsh-plugin-session-delete": "file:../vendor-plugins/dsh-plugin-session-delete",
+    "@linxin666/dsh-web-ui-all": "^0.2.9",
+    "@liustack/modlens": "3.24.0",
+    "@opendsh/dsh-plugin-setting-mcp": "^0.1.2",
+    "@tt-a1i/archify-dsh": "0.1.0",
+    "dsh-at-file": "file:../vendor-plugins/dsh-at-file",
+    "dsh-billing-balance": "file:../vendor-plugins/dsh-billing-balance",
+    "dsh-chat-import": "0.6.2",
+    "dsh-context": "0.25.3",
+    "dsh-keyboard-history": "0.1.2",
+    "dsh-notification": "file:../vendor-plugins/dsh-notification",
+    "dsh-session-manager": "file:../vendor-plugins/dsh-session-manager",
+    "dsh-status-rotator": "^0.6.6",
+    "dshmarket": "^1.18.1"
+  }
+}

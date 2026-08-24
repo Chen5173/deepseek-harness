@@ -2,6 +2,8 @@ CLAUDE.local.md
 .env
 node_modules/
 lib/
+# 例外：my-custom/vendor-plugins 里 vendored 插件的 lib/ 是运行代码，必须入库
+!my-custom/vendor-plugins/**/lib/
 *.tsbuildinfo
 pnpm-debug.log
 .pnpm-store/

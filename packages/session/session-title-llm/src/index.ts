@@ -7,7 +7,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage, BlockAssembler, deepFreeze } from '@deepseek-ai/dsh-llm'
-import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { FinishReason, GenerateOptions, Message, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import {
@@ -36,6 +36,8 @@ export interface SessionTitleLlmRequestEventData {
   readonly messages: Message[]
   /** Exact auxiliary output-token cap. */
   readonly maxTokens: number
+  /** Exact auxiliary reasoning effort, when one was requested. */
+  readonly reasoningEffort?: ReasoningEffortId
 }
 
 declare module '@deepseek-ai/dsh-session/types' {
@@ -64,6 +66,13 @@ export interface SessionTitleLlmConfig {
   readonly provider?: string
   /** Optional explicit model id; must be paired with `provider`. */
   readonly model?: string
+  /**
+   * Optional reasoning effort for the auxiliary title call. Reasoning models
+   * otherwise inherit the profile's default effort, which can spend the whole
+   * output-token budget on thinking before the title is produced. When unset,
+   * the request omits the field and the adapter's own default applies.
+   */
+  readonly reasoningEffort?: ReasoningEffortId
 }
 
 /** Validated immutable model-provider policy. */
@@ -78,6 +87,7 @@ export const SessionTitleLlmConfigFields = {
   timeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).required(),
   provider: z.string(),
   model: z.string(),
+  reasoningEffort: z.string() as unknown as z<ReasoningEffortId>,
 }
 
 /** Shared Loader schema with no library defaults. */
@@ -92,6 +102,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'timeoutMs',
   'provider',
   'model',
+  'reasoningEffort',
 ])
 
 /** Validate one positive integer limit. */
@@ -415,6 +426,7 @@ export async function generateSessionTitleWithLlm(
     model: route.model,
     messages,
     system,
+    ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
     maxTokens: config.maxOutputTokens,
     sessionId: request.session.id,
     purpose: 'session-title',
@@ -427,6 +439,7 @@ export async function generateSessionTitleWithLlm(
     system,
     messages,
     maxTokens: config.maxOutputTokens,
+    ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
   })
   callDeadline.signal.throwIfAborted()
   const assembler = new BlockAssembler()

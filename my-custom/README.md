@@ -302,3 +302,91 @@ my-custom\dsh.bat web --host 127.0.0.1 --no-open
 ### 回退
 
 git checkout HEAD -- packages/client/ui-workspace packages/host/apiproxy/src/native-path-opener.ts
+
+## 定制 8：Docker 一键部署（公网隧道 + 授权码）
+
+### 目的
+
+像自建 SiYuan 容器那样，把本仓库的 **dsh Web 界面**一键部署到 Docker，并通过 Cloudflare 公网隧道对外提供访问，启动时打印授权码（远程访问需在登录页输入）。
+
+### 新增文件（全部位于 my-custom/，另在仓库根新增 .dockerignore）
+
+- `my-custom/Dockerfile`：多阶段构建镜像。构建阶段在 node:22-slim 里 pnpm install + `pnpm run build`（`DSH_CLIENT_COMMIT_HASH=0000000`、`DSH_OH_MY_DSH_BUILD=1.0.0` 跳过 git 依赖），并把 `my-custom/plugins-web`（web 插件种子 profile）在 Linux 环境里 `pnpm install` 成 `/app/dsh-seed`（原生依赖按 Linux 编译）；运行阶段跑 `node apps/cli/lib/bin.js web --host 0.0.0.0 --port 3080 --no-open`。
+- `my-custom/docker-entrypoint.sh`：容器入口。先检查 `/data/profiles/web` 是否已有插件种子哈希，缺失或过期时把镜像里的 `/app/dsh-seed/profiles/web`（含 Linux 版 node_modules）整体灌入 `/data/profiles/web`（保留已有的 cordis.patch.yml / cordis.yml）；有 `DSH_TRUSTED_HOST` 环境变量时追加 `--trusted-host`，让 /api 信任公网 Host（浏览器信任围栏必需）。
+- `my-custom/docker-compose.yml`：`dsh-web`（本仓库 Web，映射 `127.0.0.1:3080`，数据卷 `./dsh-data:/data`）+ `cloudflared`（cloudflare/cloudflared 公网隧道，指向 `http://dsh-web:3080`）。容器名 `oh-my-dsh-web` / `oh-my-dsh-tunnel`。
+- `my-custom/start.sh` / `start-docker.bat`（Windows 快捷入口）：一键启动。
+- `my-custom/stop.sh` / `stop-docker.bat`：停止。
+- `my-custom/.gitignore`：忽略运行时生成的 `.env` / `.dsh-auth` / `.dsh-tunnel-url` / `dsh-data/`。
+- 仓库根 `.dockerignore`：构建上下文过滤（排除 node_modules/.git/lib/dist/本地状态与授权码），并保证 Dockerfile 本身仍在上下文中；对 `my-custom/plugins-web` / `my-custom/vendor-plugins` 加豁免（`!my-custom/vendor-plugins/**`），让 vendored 插件的 `lib/` 等目录进入构建上下文。
+- `my-custom/plugins-web/`：web profile 种子 manifest（`package.json` 的 `dsh.profile.bundles` + `dependencies`、`pnpm-workspace.yaml`、`.npmrc`、`pnpm-lock.yaml`），与宿主机 `~/.dsh/profiles/web` 的插件清单对应，构建时在 Linux 里安装。
+- `my-custom/vendor-plugins/`：本地/私有插件的源码副本（当前：`dsh-billing-balance`、`dsh-plugin-session-delete`、`dsh-at-file`、`dsh-notification`、`dsh-session-manager`）。Docker 构建网络访问不了 github.com，也拿不到 `D:\` 本地路径，所以这些插件以 `file:` 依赖 vendoring 进镜像。
+
+### 使用方式
+
+```sh
+bash my-custom/start.sh        # Windows 可直接双击 my-custom/start-docker.bat
+```
+
+首次运行会：生成访问授权码（存 `my-custom/.dsh-auth`，之后复用）→ 构建镜像 → 启动公网隧道 → 启动 Web，最后打印：
+
+```text
+▶ 用 docker-compose 启动 ...
+▶ 启动公网隧道 ...
+
+📎 本机: http://127.0.0.1:3080
+📎 公网: https://xxxxx.trycloudflare.com
+🔑 访问授权码: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx （也存于 my-custom/.dsh-auth）
+```
+
+- **本机访问** `http://127.0.0.1:3080`：回环免授权，直接可用。
+- **公网访问** 打印的 trycloudflare 地址：非回环请求走 auth-token 网关，首次访问会跳转 /login，输入打印的授权码即可（HttpOnly cookie 保持会话）。
+- 隧道已运行时再次执行会显示 `⏭ 公网隧道已在运行` 并复用同一公网地址。
+- 数据（会话/工作区）持久化在 `my-custom/dsh-data/`，授权码在 `my-custom/.dsh-auth`；`stop.sh` 停止后数据保留。
+
+### 注意事项
+
+- 镜像构建需要联网（pnpm registry + Docker Hub 拉 base 与 cloudflared 镜像），首次构建较慢（全量 pnpm install + build + 插件种子安装）。
+- 首次启动容器时 entrypoint 会把镜像里的插件种子灌入 `my-custom/dsh-data/profiles/web`（含数百 MB node_modules），之后启动不再重复；数据卷里已有的 `cordis.patch.yml` / `cordis.yml` 不会被覆盖。
+
+### 插件清单（构建时打进镜像）
+
+Docker 里的 web profile 是**构建时**生成的：`my-custom/plugins-web` 在镜像构建阶段（Linux 环境）`pnpm install`，原生依赖按 Linux 编译后进入镜像；容器首次启动由 entrypoint 灌入 `dsh-data/profiles/web`，之后除非种子哈希变化不再覆盖。插件清单维护在 `my-custom/plugins-web/package.json`：
+
+- **增/删插件**：编辑 `my-custom/plugins-web/package.json` 的 `dependencies` 与 `dsh.profile.bundles`，重建镜像并重启容器（`my-custom/start-docker.bat`）。重建后种子哈希变化，entrypoint 会自动把新 node_modules 灌入数据卷。
+- **插件来源**：
+  - 已发布到 npm 的插件直接写 `"name": "semver"`（如 `dsh-chat-import`、`dsh-context`），走 npmmirror。
+  - `github:` 源插件（如 `dsh-at-file`、`dsh-notification`、`dsh-session-manager`、`@huanlin/dsh-plugin-session-delete`）：Docker 构建网络连不上 github.com，改为复制一份源码到 `my-custom/vendor-plugins/<名>/`，依赖写 `"file:../vendor-plugins/<名>"`。
+  - 本地目录插件（如 `dsh-billing-balance`）：同样复制到 `my-custom/vendor-plugins/` 走 `file:`。
+- 数据卷里的 web profile 的 `package.json` 保留 `file:../vendor-plugins/...` 字样，但 node_modules 已含全部插件，运行期不需要 vendor 目录；不要在容器里再跑 `pnpm install`。
+- 公网地址每次隧道重启都会更换（trycloudflare 免费快速隧道特性）；若需固定域名，可改用自有 Cloudflare Tunnel 凭据，把 compose 里 cloudflared 的 command 换成 `tunnel run <tunnel-name>`。
+- `--host 0.0.0.0` 与 auth-token 网关依赖定制 1 / 定制 2，勿在官方分支使用。
+- Docker 未安装/未启动时脚本会明确报错退出。
+
+### 公网免配对（远程设备不再提示“此设备未配对”)
+
+容器里的 remote-web-ui 插件默认要求非回环访问先配对设备（扫码），公网设备因此会卡在“此设备未配对”。本部署已通过 `dsh-data/settings.yaml` 关闭：
+
+```yaml
+remote-web-ui:
+  requirePairingForLan: false    # 非回环 /api 免配对直通（公网域名已被 --trusted-host 信任 + 授权码网关保护）
+  publicBaseUrl: https://<当前隧道域名>  # /api/pair/* 路由信任的公网来源
+  autoTunnel: false              # 必须关：容器隧道由 cloudflared 管，开着会忽略 publicBaseUrl
+```
+
+- `publicBaseUrl` 由 `start.sh`（调用 `my-custom/update-web-ui-settings.cjs`）每次启动时按当前隧道 URL 自动刷新；隧道换地址后容器会随 `.env` 变化重建生效。
+- 想恢复扫码配对时，把 `requirePairingForLan` 改回 `true` 并重启容器即可。
+
+### 模型配置同步（宿主机 → Docker）
+
+模型配置页（settings / credentials / llm）在 dsh 里**强制只允许回环访问**（`dsh-client-connection` 把整个配置域钉死在 loopback，`--trusted-host` 与授权码都不能放开，没有开关）。所以公网隧道访问时看不到模型提供方目录，属于设计行为。
+
+配模型用 `my-custom/sync-config.sh`（或双击 `sync-config.bat`），把宿主机 `~/.dsh` 的配置同步进容器数据卷并重启：
+
+- **`settings.yaml`** → 模型提供方（`llm-pi-ai.providers.*`）+ 默认模型（`agent-default-model`）
+- **`.credentials.yaml`** → API key refs（`DEEPSEEK_API_KEY` / `ARK_API_KEY` / …），`apiKeyEnv` 就是通过凭证服务从这份文件解析的
+- 复制后自动重新应用容器专属 `remote-web-ui`（免配对 + 当前公网 URL），并重启 web 容器
+- Windows 下复制出来的文件是 777，脚本会用一次性容器把 `.credentials.yaml` 修正为 0600（credentials 提供方强制 owner-only），entrypoint 启动时也会自愈
+
+宿主机家目录可用 `DSH_DOT_DSH` 覆盖（默认 `~/.dsh`）。`codemaker` 这类走 `127.0.0.1` 的宿主机本地代理提供方在容器里不通，只有公网端点（如 ARK）可用。
+
+> 说明：把配置**打包进镜像**也可以做，但 API key 会固化进镜像、配置变更要重建镜像，且构建上下文拿不到 `~/.dsh`——不如同步脚本灵活，故不采用。
