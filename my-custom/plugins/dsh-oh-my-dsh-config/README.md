@@ -28,8 +28,8 @@ dsh plugin --profile web add C:/Nt/dsh/my-custom/plugins/dsh-oh-my-dsh-config
 
 1. **换提供器实现包不能靠改 name。** applyEntryPatches 在补丁行的 name 与目标行现有
    name 不一致时 warn 并**整条跳过**（packages/boot/app-boot/lib/index.js:96）。所以正确做法是
-   「停用原行 + 插入新行」；本层即如此，且在官方 base（first-prompt）与本 fork base
-   （all-prompts）两种取值下都成立。
+   「停用原行 + 插入新行」；本层即如此，且在官方 base（first-prompt）与本 fork 曾经的 base
+   （all-prompts）两种取值下都成立——base 行现已回退为上游取值，见下节。
 2. **config 是整行替换，不是字段合并。** 见 packages/bundle/base/cordis.patch.yml 头部注释；
    新行必须写完整 config。
 3. **reasoningEffort: off 必须是字符串。** js-yaml 4 走 YAML 1.2 核心方案，off 保留为字符串
@@ -51,6 +51,18 @@ node my-custom/plugins/dsh-oh-my-dsh-config/scripts/verify-cordis-emit.mjs
 
 页面级判据（安装并重启后）：标签页显示 Oh-My-Dsh <release> cv.<build>；点开任一有标题的会话后
 变成「<会话标题> — Oh-My-Dsh <release> cv.<build>」；**无需**重跑 pnpm run build。
+
+## 源码侧已回退：本插件是唯一承载
+
+`packages/bundle/base/cordis.patch.yml` 的 `session-title-llm` 行已改回上游取值
+（first-prompt-llm / targetWords 5 / targetCjkCharacters 10 / maxInputBytes 4096 / maxOutputTokens 64），
+该文件与上游**零差异**。也就是说：
+
+- 装了本插件 → 生效的是本层插入的 all-prompts 行（12 词 / 24 字 / 32768 / reasoningEffort off），
+  与回退前的最终配置逐字段相同；verify.mjs 的「base 标题行被停用」「仅一个标题提供器在跑」两条断言
+  就是在钉这件事。
+- 删了本插件（或换到未装它的 profile）→ 标题回到上游行为，**不会**残留半套定制。
+- 唯一仍留在源码里的是 `packages/bundle/base/package.json` 的 1 行 workspace 依赖声明（见下节）。
 
 ## 尚未搬出源码的部分（以及原因）
 

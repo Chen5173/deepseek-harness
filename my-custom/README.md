@@ -188,7 +188,7 @@ rm packages/host/apiproxy/src/fetch/random-uuid.ts \
 **后续升级：标题改为「会话内容总结」**（不再只看首条输入 + 首个回复）
 - packages/session/session-title-llm：新增 includeAssistantReplies——把整段对话（用户提示 + assistant 回复，按日志顺序）组装成 JSON conversation 交给命名模型总结；超出 maxInputBytes 时从中间裁剪（保留开头上下文 + 最近消息）。
 - packages/session/session-title-all-prompts-llm：默认开启 includeAssistantReplies（真正的会话总结提供器）。
-- packages/bundle/base/cordis.patch.yml：标题提供器换成 session-title-all-prompts-llm，maxInputBytes 8192 → 32768。
+- 标题提供器选择与预算参数**已移出源码**（定制 9 第 1 步）：`packages/bundle/base/cordis.patch.yml` 回到上游取值（first-prompt-llm / 5 词 / 10 字 / 4096 / 64），改由 `my-custom/plugins/dsh-oh-my-dsh-config/cordis.patch.yml` 承载「停用 base 行 + 插入 all-prompts 行」。**未安装该插件时标题回到上游行为**。
 - 效果：自动命名与「重新生成标题」都会基于整段对话内容生成标题，而非首句。
 
 **#2 时间分组**（Feat: group the session sidebar by calendar time buckets）
@@ -407,6 +407,15 @@ remote-web-ui:
 2. **定制 5 的标签页标题部分**：经 `webserver/index-inject` 注入运行时脚本改写产品标题，
    不再需要为改品牌重跑 `pnpm run build`。
 
+### 源码回退状态（重复的部分不再双份承载）
+
+| 项 | 源码现状 |
+|---|---|
+| `packages/bundle/base/cordis.patch.yml` 的 `session-title-llm` 行 | **已回到上游**（first-prompt-llm / 5 词 / 10 字 / 4096 / 64），与上游零差异；标题定制改由插件层单独承载，验证见 `node my-custom/plugins/dsh-oh-my-dsh-config/scripts/verify.mjs`（含「仅一个标题提供器在跑」断言） |
+| `packages/bundle/base/package.json` 的 `@deepseek-ai/dsh-session-title-all-prompts-llm` 依赖行 | **保留**：workspace 解析需要它，删掉插件插入的那行就装不上；1 行成本，rebase 冲突面几乎为零 |
+| `scripts/build.ts` / `scripts/oh-my-dsh-version.ts` 的构建期品牌 | **保留**：不是与插件重复——侧栏多行品牌块读 `DSH_CLIENT_BRAND/_RELEASE/_BUILD`，`dsh -V` 在插件挂载之前；插件只改写标签页后缀 |
+| `apps/cli/composition.md`（生成物） | 回退后重新与 base 取值一致（此前源码是 all-prompts、生成文档写 first-prompt，属漂移） |
+
 ### 明确不提取（附原因）
 
 | 定制 | 原因 |
@@ -415,7 +424,7 @@ remote-web-ui:
 | 2 token 鉴权网关 | webserver 只有 exact/prefix/fallback 三张表，**没有请求分发前的过滤器注册口** |
 | 3 `crypto.randomUUID` 兜底 | 属内核 bug 修复（`fetch/client.ts` 的 mintRpcId），该走上游而非插件 |
 | 4(b) `lastActivityAt` 排序语义 | 改了 `sessionListMetadata` 投影单元与客户端 mux 帧推进，属投影语义 |
-| 7 会话行菜单项 | ui-workspace 的会话行菜单是硬编码，无行级 slot（第三方 session-delete 插件同样只能 DOM 注入） |
+| 7 会话行菜单项 | ui-workspace 的会话行菜单是硬编码，无行级 slot；新增的「删除会话」项走插件侧 DOM 注入（见定制 10），源码里的既有项（重新生成标题 / 打开工作区目录）仍属定制 4 |
 | 8 `session/rewind` | 新必需事件类型 + surface fold + RPC 表，三条插件硬墙全中 |
 | 9 `--no-plugins/--plugins-only` | CLI 与 profile 编排层，发生在任何插件挂载之前 |
 
@@ -423,3 +432,43 @@ remote-web-ui:
 
 侧栏品牌块与时间分组列表：技术上是「priority 遮蔽 single 槽」，代价是承接整张列表的上游演进，
 且与已装的 `dsh-better-sidebar` / `dsh-session-manager` 抢同一块 single 槽——开工前需要先定槽位仲裁。
+
+## 定制 10：会话行 ⋯ 菜单的「删除会话」（插件侧，零源码改动）
+
+### 目的
+
+会话行的三点菜单末尾多一项红色「删除会话」，点击弹风险确认框，确认后彻底删除
+（会话日志 + 投影缓存 + 工作区记账），不切换当前会话。
+
+### 承载
+
+`my-custom/vendor-plugins/dsh-plugin-session-delete`（@huanlin v0.3.1 的本地 fork）。
+行菜单在 ui-workspace 里是硬编码 + portal 渲染，无行级 slot，所以只能 DOM 注入；
+本次把注入实现改成**克隆真实菜单项**并插进 `.viewport` 末尾，红色复用外壳的 `.danger`
+（`--dsw-alias-state-error-primary`）。细节与逐条原因见该目录 README 的「本 fork 的本地修改」。
+
+删除链路本身不走 RPC——宿主没有 `session.delete`；插件在 host 半边注册
+`POST /__chameleon/session/delete`，并额外暴露 `workbench_session_delete` 工具给 agent。
+
+### 生效前提（重要）
+
+该插件**当前未装进任何 profile**（`~/.dsh/profiles/*/package.json` 里没有它），所以页面上看不到。
+启用：
+
+~~~sh
+dsh plugin --profile web add file:C:/Nt/dsh/my-custom/vendor-plugins/dsh-plugin-session-delete
+~~~
+
+然后重启 `dsh web`（宿主半边需要重启加载，重启会断开当前 GUI 会话）。
+
+### 验证
+
+~~~sh
+node my-custom/vendor-plugins/dsh-plugin-session-delete/scripts/verify-menu-injection.mjs
+~~~
+
+19 项断言，jsdom 按外壳真实 DOM 形状搭桩，覆盖注入位置（`.viewport` 末尾）、danger 类、
+红色兜底、幂等、点击派发与 `[工作区]` 前缀剥离、非会话行菜单不注入。不启动服务、不写仓库状态。
+
+页面级判据：侧栏任一会话行点 ⋯ → 菜单最底部出现红色「删除会话」（带垃圾桶图标、上方一条分隔线）
+→ 点击后菜单关闭并弹出确认框，勾选「我已了解后果」才能确认。
