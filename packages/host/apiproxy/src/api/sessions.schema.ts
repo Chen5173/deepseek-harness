@@ -149,6 +149,17 @@ export const sessionForkValueSchema = z.object({
   sessionId: sessionIdSchema,
 }) satisfies z.ZodType<Wire<ResponseValue<'session.fork'>>>
 
+/** session.rewind request payload (voids the last exchange; the host derives the cut boundary). */
+export const sessionRewindRequestSchema = z.object({
+  sessionId: sessionIdSchema,
+}) satisfies z.ZodType<Wire<RequestPayload<'session.rewind'>>>
+
+/** session.rewind response value (the void boundary and the marker event's seq). */
+export const sessionRewindValueSchema = z.object({
+  throughSeq: z.number().int().min(-1),
+  seq: z.number().int().nonnegative(),
+}) satisfies z.ZodType<Wire<ResponseValue<'session.rewind'>>>
+
 /** session.history request payload (beforeSeq/maxMessages page backwards from the window tail). */
 export const sessionHistoryRequestSchema = z.object({
   sessionId: sessionIdSchema,

@@ -390,3 +390,36 @@ remote-web-ui:
 宿主机家目录可用 `DSH_DOT_DSH` 覆盖（默认 `~/.dsh`）。`codemaker` 这类走 `127.0.0.1` 的宿主机本地代理提供方在容器里不通，只有公网端点（如 ARK）可用。
 
 > 说明：把配置**打包进镜像**也可以做，但 API key 会固化进镜像、配置变更要重建镜像，且构建上下文拿不到 `~/.dsh`——不如同步脚本灵活，故不采用。
+
+## 定制 9：把定制提取成插件（进行中，第 1 步已落地）
+
+### 目的
+
+降低本 fork 与上游的 rebase 成本：能落到 profile 层的东西不再改 `packages/` 源码。
+
+### 已提取（第 1 步）
+
+见 `my-custom/plugins/dsh-oh-my-dsh-config/README.md`。零源码改动，承载两项：
+
+1. **定制 4(c) 的配置部分**：会话标题提供器换成「整段对话总结」实现包及其预算参数，
+   移到插件的 `cordis.patch.yml` 层（做法是「停用 base 行 + 插入新行」，
+   因为补丁行改 `name` 会被整条跳过）。
+2. **定制 5 的标签页标题部分**：经 `webserver/index-inject` 注入运行时脚本改写产品标题，
+   不再需要为改品牌重跑 `pnpm run build`。
+
+### 明确不提取（附原因）
+
+| 定制 | 原因 |
+|---|---|
+| 1 放开 `--host 0.0.0.0` 的守卫删除 | CLI/startup 层，插件不可达；且与定制 2 安全耦合，只提取危险的半边是负收益 |
+| 2 token 鉴权网关 | webserver 只有 exact/prefix/fallback 三张表，**没有请求分发前的过滤器注册口** |
+| 3 `crypto.randomUUID` 兜底 | 属内核 bug 修复（`fetch/client.ts` 的 mintRpcId），该走上游而非插件 |
+| 4(b) `lastActivityAt` 排序语义 | 改了 `sessionListMetadata` 投影单元与客户端 mux 帧推进，属投影语义 |
+| 7 会话行菜单项 | ui-workspace 的会话行菜单是硬编码，无行级 slot（第三方 session-delete 插件同样只能 DOM 注入） |
+| 8 `session/rewind` | 新必需事件类型 + surface fold + RPC 表，三条插件硬墙全中 |
+| 9 `--no-plugins/--plugins-only` | CLI 与 profile 编排层，发生在任何插件挂载之前 |
+
+### 第 2 步候选（未开工）
+
+侧栏品牌块与时间分组列表：技术上是「priority 遮蔽 single 槽」，代价是承接整张列表的上游演进，
+且与已装的 `dsh-better-sidebar` / `dsh-session-manager` 抢同一块 single 槽——开工前需要先定槽位仲裁。

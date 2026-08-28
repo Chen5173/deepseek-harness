@@ -405,4 +405,16 @@ export interface SessionsApi {
    */
   cancel(request: RpcRequest<{ sessionId: SessionId }>): Promise<RpcResponse<{ accepted: true }>>
 
+  /**
+   * Rewind an ordinary idle session by one exchange: append a `session/rewind`
+   * marker voiding the turn containing the last human prompt and everything
+   * after its preceding completed-turn boundary (or the whole prefix when it
+   * was the first turn). The raw log stays append-only; the model surface,
+   * transcripts, and history reads drop the voided range. Rejects while the
+   * session is running, for session-backed subagents, and when the session
+   * has no visible human turn to rewind.
+   */
+  rewind(request: RpcRequest<{ sessionId: SessionId }>):
+  Promise<RpcResponse<{ throughSeq: number; seq: number }>>
+
 }

@@ -288,9 +288,16 @@ async function listSessions(ctx) {
       const rows = rec.rows && typeof rec.rows === 'object' ? rec.rows : {}
       const titleRow = rows.title && rows.title.val
       const identity = rec.identity && typeof rec.identity === 'object' ? rec.identity : {}
+      // Titleless sessions (never-prompted blank rows, or a conversation
+      // rewound to empty) still render in the sidebar under their directory
+      // basename; serve the same fallback so title-based lookup can resolve
+      // them for deletion.
+      const cwdTitle = typeof identity.cwd === 'string' && identity.cwd !== ''
+        ? identity.cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || null
+        : null
       out.push({
         sessionId: id,
-        title: typeof titleRow === 'string' ? titleRow : null,
+        title: typeof titleRow === 'string' ? titleRow : cwdTitle,
         createdAt: typeof identity.createdAt === 'number' ? identity.createdAt : null,
         running: !!(agents && typeof agents.get === 'function' && agents.get(id)),
       })

@@ -23,6 +23,10 @@ interface ProfileInvocation {
   profile: string
   /** Extra patch-list overlays applied after the profile's own layer, in argv order. */
   patches: string[]
+  /** Plugin bundles to keep beside the profile's base shell; empty keeps every bundle. */
+  pluginsOnly: string[]
+  /** True boots the profile's base shell bundles only, with no plugin bundles. */
+  noPlugins: boolean
   /** Everything after the launcher's own flags, verbatim, for injected app plugins. */
   args: string[]
 }
@@ -34,6 +38,10 @@ interface DumpConfigInvocation {
   /** Omit the profile's user layer and --patch overlays; print bundle layers only. */
   defaultOnly: boolean
   patches: string[]
+  /** Plugin bundles to keep beside the profile's base shell; empty keeps every bundle. */
+  pluginsOnly: string[]
+  /** True prints the profile's base shell bundles only, with no plugin bundles. */
+  noPlugins: boolean
 }
 
 /** Manage a profile's plugins: forward `args` to pnpm inside the profile directory. */
@@ -52,6 +60,12 @@ interface BootOptions {
   patch?: string[]
   dumpConfig?: boolean
   dumpDefaultConfig?: boolean
+  pluginsOnly?: string[]
+  /**
+   * Commander's negation attribute for `--no-plugins`: absent `true`
+   * default, `false` when the flag is passed.
+   */
+  plugins?: boolean
 }
 
 /**
@@ -68,6 +82,8 @@ Examples:
   dsh --profile tui --patch ./extra.yml      boot a custom profile with one extra overlay
   dsh --profile tui --resume <session>       arguments after the launcher flags reach the app
   dsh --profile web --help                   the web app's own flags and help
+  dsh web --no-plugins                       boot web with only its base shell bundles, no plugin bundles
+  dsh web --plugins-only dshmarket           boot web keeping only the named plugin bundles beside the base shell
   dsh plugin --profile tui add <package>     install a plugin into the tui profile
 `
 
@@ -82,9 +98,15 @@ Examples:
  */
 function resolveBoot(program: Command, profile: string, options: BootOptions, args: string[]): DshInvocation {
   const patches = options.patch ?? []
+  const pluginsOnly = options.pluginsOnly ?? []
+  const noPlugins = options.plugins === false
   if (patches.includes('')) program.error('error: --patch needs a path')
+  if (pluginsOnly.includes('')) program.error('error: --plugins-only needs a bundle name')
+  if (noPlugins && pluginsOnly.length > 0) {
+    program.error('error: --no-plugins and --plugins-only are mutually exclusive')
+  }
   if (options.dumpConfig !== true && options.dumpDefaultConfig !== true) {
-    return { mode: 'profile', profile, patches, args }
+    return { mode: 'profile', profile, patches, pluginsOnly, noPlugins, args }
   }
   if (options.dumpConfig === true && options.dumpDefaultConfig === true) {
     program.error('error: --dump-config and --dump-default-config are mutually exclusive')
@@ -99,7 +121,10 @@ function resolveBoot(program: Command, profile: string, options: BootOptions, ar
   if (defaultOnly && patches.length > 0) {
     program.error('error: --dump-default-config prints the bundle layers and takes no --patch')
   }
-  return { mode: 'dump-config', profile, defaultOnly, patches }
+  if (defaultOnly && pluginsOnly.length > 0) {
+    program.error('error: --dump-default-config prints the bundle layers and takes no --plugins-only')
+  }
+  return { mode: 'dump-config', profile, defaultOnly, patches, pluginsOnly, noPlugins }
 }
 
 /**
@@ -130,6 +155,8 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
     .argument('[args...]', 'arguments for the booted profile\'s app (see: dsh --profile <name> --help)')
     .option('--profile <name>', 'the profile under $DSH_HOME/profiles to boot')
     .option('--patch <path>', 'extra patch-list overlay applied after the profile layer (repeatable)', collect)
+    .option('--plugins-only <bundle>', 'keep only the named plugin bundles beside the profile\'s base shell (repeatable)', collect)
+    .option('--no-plugins', 'boot the profile\'s base shell bundles only, with no plugin bundles')
     .option('--dump-config', 'print the composed profile tree and exit')
     .option('--dump-default-config', 'print the profile tree without its user layer or --patch overlays and exit')
     .action((args: string[], options: BootOptions & { profile?: string }) => {
@@ -148,8 +175,9 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
   const rejectParentOptions = (command: string): void => {
     const parent = program.opts<BootOptions & { profile?: string }>()
     if (parent.profile !== undefined || parent.patch !== undefined
-      || parent.dumpConfig !== undefined || parent.dumpDefaultConfig !== undefined) {
-      program.error(`error: ${command} takes none of parent --profile, --patch, --dump-config, or --dump-default-config`)
+      || parent.dumpConfig !== undefined || parent.dumpDefaultConfig !== undefined
+      || parent.pluginsOnly !== undefined || parent.plugins === false) {
+      program.error(`error: ${command} takes none of parent --profile, --patch, --plugins-only, --no-plugins, --dump-config, or --dump-default-config`)
     }
   }
 
@@ -161,6 +189,8 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
     .enablePositionalOptions()
     .argument('[args...]', 'arguments for the web app (see: dsh web --help)')
     .option('--patch <path>', 'extra patch-list overlay applied after the profile layer (repeatable)', collect)
+    .option('--plugins-only <bundle>', 'keep only the named plugin bundles beside the web profile\'s base shell (repeatable)', collect)
+    .option('--no-plugins', 'boot the web profile\'s base shell bundles only, with no plugin bundles')
     .option('--dump-config', 'print the composed web-profile tree (with the user layer and any --patch) and exit')
     .option('--dump-default-config', 'print the web profile\'s bundle layers (no user layer) and exit')
     .action((args: string[], options: BootOptions) => {

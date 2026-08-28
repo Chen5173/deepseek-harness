@@ -22,27 +22,27 @@ afterEach(() => { vi.restoreAllMocks() })
 
 describe('parseDshArgs', () => {
   it('routes profile boots and the web alias, handing the rest to the app', () => {
-    expect(parse(['--profile', 'tui'])).toEqual({ mode: 'profile', profile: 'tui', patches: [], args: [] })
+    expect(parse(['--profile', 'tui'])).toEqual({ mode: 'profile', profile: 'tui', patches: [], pluginsOnly: [], noPlugins: false, args: [] })
     expect(parse(['--profile', 'tui', '--patch', 'a.yml', '--patch', 'b.yml']))
-      .toEqual({ mode: 'profile', profile: 'tui', patches: ['a.yml', 'b.yml'], args: [] })
-    expect(parse(['web'])).toEqual({ mode: 'profile', profile: 'web', patches: [], args: [] })
+      .toEqual({ mode: 'profile', profile: 'tui', patches: ['a.yml', 'b.yml'], pluginsOnly: [], noPlugins: false, args: [] })
+    expect(parse(['web'])).toEqual({ mode: 'profile', profile: 'web', patches: [], pluginsOnly: [], noPlugins: false, args: [] })
     expect(parse(['web', '--patch', 'web.yml']))
-      .toEqual({ mode: 'profile', profile: 'web', patches: ['web.yml'], args: [] })
+      .toEqual({ mode: 'profile', profile: 'web', patches: ['web.yml'], pluginsOnly: [], noPlugins: false, args: [] })
   })
 
   it('ends the launcher flags at the first token it does not own', () => {
     // App flags, including its -h, and positionals reach the app verbatim.
     expect(parse(['--profile', 'tui', '--resume', 'abc']))
-      .toEqual({ mode: 'profile', profile: 'tui', patches: [], args: ['--resume', 'abc'] })
+      .toEqual({ mode: 'profile', profile: 'tui', patches: [], pluginsOnly: [], noPlugins: false, args: ['--resume', 'abc'] })
     expect(parse(['--profile', 'web', '-h']))
-      .toEqual({ mode: 'profile', profile: 'web', patches: [], args: ['-h'] })
+      .toEqual({ mode: 'profile', profile: 'web', patches: [], pluginsOnly: [], noPlugins: false, args: ['-h'] })
     expect(parse(['web', '--host', '127.0.0.1', '--port', '8080', '--no-open', '--future-web-flag']))
-      .toEqual({ mode: 'profile', profile: 'web', patches: [], args: ['--host', '127.0.0.1', '--port', '8080', '--no-open', '--future-web-flag'] })
+      .toEqual({ mode: 'profile', profile: 'web', patches: [], pluginsOnly: [], noPlugins: false, args: ['--host', '127.0.0.1', '--port', '8080', '--no-open', '--future-web-flag'] })
     expect(parse(['--profile', 'headless', 'run', 'the', 'tests']))
-      .toEqual({ mode: 'profile', profile: 'headless', patches: [], args: ['run', 'the', 'tests'] })
+      .toEqual({ mode: 'profile', profile: 'headless', patches: [], pluginsOnly: [], noPlugins: false, args: ['run', 'the', 'tests'] })
     // Launcher flags placed after that boundary belong to the app too.
     expect(parse(['--profile', 'tui', '--patch', 'a.yml', '--resume', 'b', '--patch', 'late.yml']))
-      .toEqual({ mode: 'profile', profile: 'tui', patches: ['a.yml'], args: ['--resume', 'b', '--patch', 'late.yml'] })
+      .toEqual({ mode: 'profile', profile: 'tui', patches: ['a.yml'], pluginsOnly: [], noPlugins: false, args: ['--resume', 'b', '--patch', 'late.yml'] })
   })
 
   it('routes the plugin pnpm forwarder', () => {
@@ -59,15 +59,38 @@ describe('parseDshArgs', () => {
 
   it('routes profile and web config dumps', () => {
     expect(parse(['--profile', 'web', '--dump-config']))
-      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [] })
+      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [], pluginsOnly: [], noPlugins: false })
     expect(parse(['--profile', 'web', '--dump-default-config']))
-      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: true, patches: [] })
+      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: true, patches: [], pluginsOnly: [], noPlugins: false })
     expect(parse(['--profile', 'tui', '--dump-config', '--patch', 'x.yml']))
-      .toEqual({ mode: 'dump-config', profile: 'tui', defaultOnly: false, patches: ['x.yml'] })
+      .toEqual({ mode: 'dump-config', profile: 'tui', defaultOnly: false, patches: ['x.yml'], pluginsOnly: [], noPlugins: false })
     expect(parse(['web', '--dump-config']))
-      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [] })
+      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [], pluginsOnly: [], noPlugins: false })
     expect(parse(['web', '--dump-default-config']))
-      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: true, patches: [] })
+      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: true, patches: [], pluginsOnly: [], noPlugins: false })
+  })
+
+  it('routes plugin-scoped boots and dumps on the profile and web alias', () => {
+    expect(parse(['web', '--no-plugins']))
+      .toEqual({ mode: 'profile', profile: 'web', patches: [], pluginsOnly: [], noPlugins: true, args: [] })
+    expect(parse(['web', '--plugins-only', 'dshmarket']))
+      .toEqual({ mode: 'profile', profile: 'web', patches: [], pluginsOnly: ['dshmarket'], noPlugins: false, args: [] })
+    expect(parse(['web', '--plugins-only', 'dshmarket', '--plugins-only', 'dsh-context']))
+      .toEqual({ mode: 'profile', profile: 'web', patches: [], pluginsOnly: ['dshmarket', 'dsh-context'], noPlugins: false, args: [] })
+    expect(parse(['--profile', 'web', '--no-plugins', '--port', '8080']))
+      .toEqual({ mode: 'profile', profile: 'web', patches: [], pluginsOnly: [], noPlugins: true, args: ['--port', '8080'] })
+    expect(parse(['web', '--plugins-only', 'dshmarket', '--dump-config']))
+      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [], pluginsOnly: ['dshmarket'], noPlugins: false })
+    expect(parse(['web', '--no-plugins', '--dump-config']))
+      .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [], pluginsOnly: [], noPlugins: true })
+  })
+
+  it('rejects contradictory and empty plugin-scope inputs', () => {
+    expect(exitCode(['web', '--no-plugins', '--plugins-only', 'dshmarket'])).toBe(1)
+    expect(exitCode(['web', '--plugins-only='])).toBe(1)
+    expect(exitCode(['--profile', 'web', '--dump-default-config', '--plugins-only', 'dshmarket'])).toBe(1)
+    // A dump with a plugin scope still takes no app arguments.
+    expect(exitCode(['web', '--no-plugins', '--dump-config', '--port', '8080'])).toBe(1)
   })
 
   it('rejects missing profile, removed flags, and contradictory inputs', () => {

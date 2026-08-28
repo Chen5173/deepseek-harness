@@ -570,6 +570,12 @@ export interface ComposerBarInjected {
   /** Cancel the in-flight turn; absent with the session. */
   stop: (() => void) | undefined
   /**
+   * Rewind the session by one exchange and restore the last human prompt into
+   * the composer for re-editing (the double-Escape gesture). Absent with the
+   * session; failures land in the snapshot's promptError.
+   */
+  rewind: (() => void) | undefined
+  /**
    * Submit one slash-command line against this session's agent (the chrome
    * controls' write path — the permission chip submits `/permission <preset>`);
    * absent with the session.

@@ -228,6 +228,7 @@ function mount(
           useLexicon={bindSnapshotSelector(wiring.lexicon)}
           useMenuLauncher={bindSnapshotSelector(createSnapshotStore<string | null>(null))}
           stop={stop}
+          rewind={() => {}}
           command={() => Promise.resolve(true)}
           t={t}
           renderSlot={((key: string, seatOwner: object) => {

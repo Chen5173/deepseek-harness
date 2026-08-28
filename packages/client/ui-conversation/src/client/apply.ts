@@ -299,6 +299,7 @@ export function apply(ctx: Context): void {
             submissionPolicy.resolve(running, gesture, steeringAvailable),
           toggleCommandMenu: undefined,
           stop: undefined,
+          rewind: undefined,
           command: undefined,
           hooks: { notices: ABSENT_NOTICES, lexicon: ABSENT_LEXICON, menuLauncher: ABSENT_MENU_LAUNCHER },
         }
@@ -347,6 +348,24 @@ export function apply(ctx: Context): void {
         stop: () => {
           scopedConversation(sessions, sessionId).cancel().catch(() => {
             // Stop failure surfaces via snapshot.promptError; nothing to restore.
+          })
+        },
+        rewind: () => {
+          // Capture the last human prompt BEFORE the rewind voids it, then
+          // restore it into the composer for editing. Text blocks only:
+          // image attachments never rehydrate into the draft.
+          const snapshot = sessions.binding(sessionId)?.session.getSnapshot()
+          const lastUser = snapshot === undefined
+            ? undefined
+            : [...snapshot.nodes].reverse().find(node => node.kind === 'user')
+          const restored = lastUser === undefined ? '' : lastUser.content
+            .filter((block): block is Extract<(typeof lastUser.content)[number], { type: 'text' }> => block.type === 'text')
+            .map(block => block.text)
+            .join('\n')
+          scopedConversation(sessions, sessionId).rewind().then(() => {
+            if (restored !== '') shell.setDraft(restored)
+          }).catch(() => {
+            // Rewind failure surfaces via snapshot.promptError; the draft stays.
           })
         },
         command: async (line) => {

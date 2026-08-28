@@ -154,10 +154,19 @@ interface SurfaceReplacePlan extends SurfaceFoldReplacement {
   endIdx: number
 }
 
+/** One validated rewind transition that has not mutated fold state yet. */
+interface SurfaceRewindPlan {
+  kind: 'rewind'
+  seq: number
+  /** Every surface node with seq > this value is voided (its event is dropped). */
+  throughSeq: number
+}
+
 /** One validated surface transition that has not mutated fold state yet. */
 type SurfacePlan =
   | { kind: 'append'; seq: number }
   | SurfaceReplacePlan
+  | SurfaceRewindPlan
 
 /** Create an empty surface fold state. */
 function createFoldState(): SurfaceFoldState {
@@ -317,6 +326,43 @@ function assertToolResultRewrite(
   }
 }
 
+/**
+ * Validate a `session/rewind` marker at its replay boundary: the void target
+ * must be a completed turn boundary (or the empty prefix) and the voided range
+ * must not contain an open turn — a rewind can only undo whole, completed work.
+ * @param event - the marker event.
+ * @param expectedSeq - the marker's own seq (equals the voided range's end).
+ * @param events - the complete log prefix, in contiguous seq order.
+ * @returns the validated rewind plan.
+ */
+function planRewind(
+  event: SessionEvent<'session/rewind'>,
+  expectedSeq: number,
+  events: readonly SessionEvent[],
+): SurfaceRewindPlan {
+  const { throughSeq } = event.data
+  if (!Number.isSafeInteger(throughSeq) || throughSeq < -1 || throughSeq >= expectedSeq) {
+    throw new Error(`session/rewind throughSeq ${String(throughSeq)} must be -1 or an earlier event seq`)
+  }
+  if (throughSeq >= 0 && events[throughSeq]?.type !== 'turn/end') {
+    throw new Error(`session/rewind throughSeq ${throughSeq} is not a completed turn/end boundary`)
+  }
+  // The voided range is (throughSeq, expectedSeq]: every turn/start inside it
+  // must be paired with a turn/end also inside it. An open turn there would be
+  // cut in half, which neither the surface nor the relational invariants allow.
+  let openTurns = 0
+  for (let seq = throughSeq + 1; seq <= expectedSeq; seq++) {
+    const candidate = events[seq]
+    if (candidate === undefined) continue
+    if (candidate.type === 'turn/start') openTurns++
+    else if (candidate.type === 'turn/end') openTurns--
+  }
+  if (openTurns !== 0) {
+    throw new Error('session/rewind must not void a range containing an open turn')
+  }
+  return { kind: 'rewind', seq: expectedSeq, throughSeq }
+}
+
 /** Validate one event at its replay boundary and prepare its atomic fold transition. */
 function planSurfaceEvent(
   state: SurfaceFoldState,
@@ -327,6 +373,9 @@ function planSurfaceEvent(
 ): SurfacePlan | undefined {
   if (event.seq !== expectedSeq) {
     throw new Error(`session event seq ${event.seq} is not contiguous; expected ${expectedSeq}`)
+  }
+  if (event.type === 'session/rewind') {
+    return planRewind(event, expectedSeq, events)
   }
   const surfaceOp = surfaceOpOf(event)
   if (surfaceOp === undefined) return
@@ -367,6 +416,9 @@ function applySurfacePlan(
     state.nodes.push(plan.seq)
   } else if (plan?.kind === 'replace') {
     state.nodes.splice(plan.startIdx, plan.endIdx - plan.startIdx + 1, plan.seq)
+    state.replaceGeneration += 1
+  } else if (plan?.kind === 'rewind') {
+    state.nodes = state.nodes.filter(seq => seq <= plan.throughSeq)
     state.replaceGeneration += 1
   }
   if (plan?.kind !== 'replace') return
@@ -457,4 +509,49 @@ export class SurfaceManager implements SessionSurface {
       this._lastProcessedSeq = seq
     }
   }
+}
+
+/** The one durable rule a `session/rewind` marker declares: the voided range it owns. */
+export interface RewindRule {
+  /** Seq of the LAST `session/rewind` marker in the log. */
+  readonly markerSeq: number
+  /** Every event with `throughSeq < seq <= markerSeq` is voided; -1 voids the whole prefix. */
+  readonly throughSeq: number
+}
+
+/**
+ * The effective rewind rule of a session log: the LAST `session/rewind`
+ * marker's rule, or undefined when the log contains none. Later markers
+ * subsume earlier ones (their voided range contains them), so the last marker
+ * is the complete answer — consumers that hide voided history filter with
+ * {@link withoutVoidedEvents} once instead of replaying the fold.
+ * @param events - session events in contiguous seq order.
+ * @returns the last marker's rule, or undefined.
+ */
+export function rewindRuleOf(events: readonly SessionEvent[]): RewindRule | undefined {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]
+    if (event?.type === 'session/rewind') return { markerSeq: event.seq, throughSeq: event.data.throughSeq }
+  }
+  return undefined
+}
+
+/**
+ * Drop the events a session log's rewind markers void: events inside the last
+ * marker's `(throughSeq, markerSeq]` range. Events appended after the marker
+ * remain, and `session/title` events always survive — a title names the
+ * conversation, not its content, so a rewind must not unname it (Claude Code
+ * parity: the name stays while the transcript rewinds). Without a marker the
+ * input returns unchanged (a fresh shallow copy). This is the uniform
+ * visibility rule for consumers that read raw events — transcripts, history
+ * pages, and projection folds — while the ordered surface applies the same
+ * rule inside its fold.
+ * @param events - session events in contiguous seq order.
+ * @returns the visible prefix plus post-marker tail and surviving titles.
+ */
+export function withoutVoidedEvents(events: readonly SessionEvent[]): SessionEvent[] {
+  const rule = rewindRuleOf(events)
+  if (rule === undefined) return [...events]
+  return events.filter(event => (event.type as string) === 'session/title'
+    || event.seq <= rule.throughSeq || event.seq > rule.markerSeq)
 }

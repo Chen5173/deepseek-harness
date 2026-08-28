@@ -35,6 +35,9 @@ import css from './InputBar.module.css'
 /** Decoration product of the no-session state (no machine, empty draft). */
 const INERT_DECORATIONS: DraftDecorations = { token: null, chips: [], textRefs: [], hint: null }
 
+/** Double-press window for the idle Escape rewind gesture (Codex / Claude Code parity). */
+const DOUBLE_ESC_WINDOW_MS = 800
+
 /** The selection and edit family a `beforeinput` recorded, with the draft length it applied to. */
 interface PendingEdit {
   readonly start: number
@@ -78,7 +81,7 @@ export type InputBarProps = ComposerBarProps
 
 export function InputBar({
   useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages,
-  resolveSubmitMode, toggleCommandMenu, stop, command, t,
+  resolveSubmitMode, toggleCommandMenu, stop, rewind, command, t,
   renderSlot, useNotices, useLexicon, useMenuLauncher,
   useProjection, sessionId, variant, disabled: inert = false, blocked,
   workspacePickerOpen = false, onRequestWorkspace,
@@ -141,6 +144,10 @@ export function InputBar({
   const mirrorRef = useRef<HTMLDivElement | null>(null)
   const safari = useMemo(() => isSafariBrowser(navigator), [])
   const safariNativeShrinkRef = useRef(false)
+  /** Timestamp of the previous idle Escape press (the double-press rewind window). */
+  const lastEscapeAt = useRef(0)
+  /** Whether the previous idle Escape press armed the double-press window. */
+  const escapeArmed = useRef(false)
   // IME guard: composition Enter picks a candidate, it must not send. The ref outlives renders;
   // clearing is deferred one tick because Safari delivers the closing keydown AFTER compositionend.
   const composingRef = useRef(false)
@@ -388,7 +395,33 @@ export function InputBar({
       // Escape layering: an open overlay closes; claimed without an overlay
       // does NOT release (backspacing the token is the only exit gesture).
       keyboard.dismissPopup()
-      if (keyboard.arbitrate('escape', composing) === 'consumed') e.preventDefault()
+      if (keyboard.arbitrate('escape', composing) === 'consumed') {
+        e.preventDefault()
+        return
+      }
+      if (e.repeat || composing || locked || machineBusy) return
+      // Escape #1 with a running session interrupts the generation (the Stop
+      // button's keyboard face). Escape #2 within the double-press window,
+      // while idle with an empty draft, rewinds the last exchange and
+      // restores the previous prompt for editing — the Codex / Claude Code
+      // escape vocabulary.
+      if (running) {
+        escapeArmed.current = false
+        stop?.()
+        return
+      }
+      if (rewind !== undefined && empty && subagent === null) {
+        const now = Date.now()
+        const secondPress = escapeArmed.current && now - lastEscapeAt.current < DOUBLE_ESC_WINDOW_MS
+        lastEscapeAt.current = now
+        if (secondPress) {
+          escapeArmed.current = false
+          rewind()
+        } else {
+          escapeArmed.current = true
+          showToast(t('input.rewindHint'))
+        }
+      }
       return
     }
     if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {
@@ -436,6 +469,7 @@ export function InputBar({
   }
 
   const onChange = (e: ChangeEvent<HTMLTextAreaElement>): void => {
+    escapeArmed.current = false // a new draft supersedes any armed rewind
     if (keyboard === undefined || locked) return // disabled/read-only states cannot edit the draft
     if (machineBusy) return // submitting is the read-only span; adjudicating holds the pending lock
     const next = e.target.value

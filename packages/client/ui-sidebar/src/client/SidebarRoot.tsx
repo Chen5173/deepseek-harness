@@ -57,6 +57,13 @@ export function SidebarRoot({
   }, [collapsed])
   const wide = !collapsed || !settled
 
+  // Oh-My-Dsh fork builds inject structured brand facts (DSH_CLIENT_BRAND /
+  // DSH_CLIENT_RELEASE / DSH_CLIENT_BUILD) so the brand renders as a
+  // multi-line title; official and plain builds keep the single-line fallback.
+  const ohMyDshBrand = process.env.DSH_CLIENT_BRAND
+  const releaseLine = process.env.DSH_CLIENT_RELEASE
+  const buildLine = process.env.DSH_CLIENT_BUILD
+
   // Freeze the content at its expanded width while it fades out (collapsed
   // && wide): the sliding column then clips it instead of reflowing it. The
   // rail layout (.collapsed styles) only applies once the fade settles.
@@ -125,7 +132,7 @@ export function SidebarRoot({
       }}
       onPointerLeave={() => { armLinger() }}
     >
-      <div className={css.logoRow}>
+      <div className={clsx(css.logoRow, ohMyDshBrand !== undefined && css.ohMyDshLogoRow)}>
         {/* Expanded, the brand doubles as a New Session shortcut; the
             collapsed rail's logo is the expand toggle below instead. */}
         {wide && (
@@ -135,20 +142,32 @@ export function SidebarRoot({
             aria-label={t('session.new.label')}
             onClick={() => { startSession() }}
           >
-            <span className={css.brandIdentity} aria-hidden="true">
+            <span className={clsx(css.brandIdentity, ohMyDshBrand !== undefined && css.ohMyDshBrandIdentity)} aria-hidden="true">
               <span className={css.brandMark}>
                 {renderSlot('sidebar.brand.mark', { size: 24 }, { fallback: <FishLogo size={24} /> })}
               </span>
-              <span className={css.brandName}>
+              <span className={clsx(css.brandName, ohMyDshBrand !== undefined && css.ohMyDshBrandName)}>
                 {renderSlot('sidebar.brand.name', {}, {
-                  fallback: (
-                    <>
-                      <span className={css.fallbackBrandName}>{process.env.DSH_CLIENT_TITLE ?? 'DSH Local Build'}</span>
-                      {process.env.DSH_CLIENT_COMMIT_HASH
-                        ? <span className={css.buildRevision}>{process.env.DSH_CLIENT_COMMIT_HASH}</span>
-                        : null}
-                    </>
-                  ),
+                  fallback: ohMyDshBrand !== undefined
+                    ? (
+                      <span className={css.ohMyDshBrandBlock}>
+                        <span className={css.ohMyDshBrandLine}>{ohMyDshBrand}</span>
+                        {releaseLine !== undefined && buildLine !== undefined
+                          ? <span className={css.brandMetaLine}>版本：{releaseLine} / {buildLine}</span>
+                          : null}
+                        {process.env.DSH_CLIENT_COMMIT_HASH
+                          ? <span className={css.brandMetaLine}>commit: {process.env.DSH_CLIENT_COMMIT_HASH}</span>
+                          : null}
+                      </span>
+                    )
+                    : (
+                      <>
+                        <span className={css.fallbackBrandName}>{process.env.DSH_CLIENT_TITLE ?? 'DSH Local Build'}</span>
+                        {process.env.DSH_CLIENT_COMMIT_HASH
+                          ? <span className={css.buildRevision}>{process.env.DSH_CLIENT_COMMIT_HASH}</span>
+                          : null}
+                      </>
+                    ),
                 })}
               </span>
             </span>

@@ -63,6 +63,8 @@ switch (invocation.mode) {
       environment: loadLayeredEnv('dsh'),
       profile: invocation.profile,
       patchFiles: invocation.patches,
+      pluginsOnly: invocation.pluginsOnly,
+      noPlugins: invocation.noPlugins,
       args: invocation.args,
     })
     break
@@ -74,7 +76,10 @@ switch (invocation.mode) {
   }
   case 'dump-config': {
     const { runDumpConfig } = await import('./dump-config.ts')
-    runDumpConfig(invocation.profile, invocation.defaultOnly, invocation.patches)
+    runDumpConfig(
+      invocation.profile, invocation.defaultOnly, invocation.patches,
+      invocation.pluginsOnly, invocation.noPlugins,
+    )
     break
   }
   default:

@@ -60,7 +60,27 @@ function ohMyDshBuildNumber(root: string, environment: NodeJS.ProcessEnv = proce
   return `1.0.${Math.max(0, count - 1)}`
 }
 
+/** Structured Oh-My-Dsh brand facts: brand name, release, and build stamp. */
+export interface OhMyDshBrandParts {
+  /** The fork brand name (e.g. `Oh-My-Dsh`). */
+  brand: string
+  /** The checked-in release version (e.g. `0.1.1-rc.2`). */
+  release: string
+  /** The personal build stamp (e.g. `cv.1.0.1`). */
+  build: string
+}
+
+/** The brand name, release version, and per-commit build stamp, separately. */
+export function ohMyDshBrandParts(root: string, environment: NodeJS.ProcessEnv = process.env): OhMyDshBrandParts {
+  return {
+    brand: OH_MY_DSH_BRAND,
+    release: repositoryVersion(root),
+    build: `cv.${ohMyDshBuildNumber(root, environment)}`,
+  }
+}
+
 /** Full client title: `Oh-My-Dsh <release> cv.<build>` — identical to `dsh -V`. */
 export function ohMyDshClientTitle(root: string, environment: NodeJS.ProcessEnv = process.env): string {
-  return `${OH_MY_DSH_BRAND} ${repositoryVersion(root)} cv.${ohMyDshBuildNumber(root, environment)}`
+  const { brand, release, build } = ohMyDshBrandParts(root, environment)
+  return `${brand} ${release} ${build}`
 }

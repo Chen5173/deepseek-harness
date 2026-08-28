@@ -223,27 +223,32 @@ window.__ModuleLoader__.load({
           const snap = svc.list.getSnapshot()
           const byId = snap && snap.byId ? snap.byId : {}
           const ids = Object.keys(byId)
+          // Match against the displayed title when present (the row text the
+          // user sees), falling back to the durable title: a titleless session
+          // (never prompted, or rewound to empty) displays its directory
+          // basename, and that is what the sidebar dispatched.
+          const rowTitle = (s) => normalizeTitle(s && (s.displayTitle || s.title))
           for (const id of ids) {
             const s = byId[id]
-            if (s && normalizeTitle(s.title) === want) {
-              return { sessionId: id, title: s.title, running: s.running === true }
+            if (s && rowTitle(s) === want) {
+              return { sessionId: id, title: s.title || s.displayTitle, running: s.running === true }
             }
           }
           if (wantBase) {
             for (const id of ids) {
               const s = byId[id]
-              if (s && stripForkSuffix(s.title) === wantBase) {
-                return { sessionId: id, title: s.title, running: s.running === true }
+              if (s && stripForkSuffix(rowTitle(s)) === wantBase) {
+                return { sessionId: id, title: s.title || s.displayTitle, running: s.running === true }
               }
             }
           }
           let best = null
           for (const id of ids) {
             const s = byId[id]
-            if (!s || !s.title) continue
-            const t = normalizeTitle(s.title)
+            if (!s || !rowTitle(s)) continue
+            const t = rowTitle(s)
             if (t && (t.indexOf(want) >= 0 || want.indexOf(t) >= 0)) {
-              best = { sessionId: id, title: s.title, running: s.running === true }
+              best = { sessionId: id, title: s.title || s.displayTitle, running: s.running === true }
             }
           }
           if (best) return best

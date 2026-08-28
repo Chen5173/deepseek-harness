@@ -1,0 +1,9 @@
+{
+  "name": "dsh-oh-my-dsh-config",
+  "description": "Oh-My-Dsh fork: title provider config + runtime browser tab brand",
+  "version": "0.1.0",
+  "entry": {
+    "name": "dsh-oh-my-dsh-config",
+    "inject": []
+  }
+}

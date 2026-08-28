@@ -30,7 +30,7 @@ import type {
 // wire-fabrication boundary (the schema layer's one-cast-point posture).
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import type { CommandDescriptor, CommandExecution, CommandResult } from '@deepseek-ai/dsh-commands/types'
-import { deriveEventMessage, foldSurface } from '@deepseek-ai/dsh-session/surface'
+import { deriveEventMessage, foldSurface, withoutVoidedEvents } from '@deepseek-ai/dsh-session/surface'
 import type {
   ApiProxy, ClientRequest, ClientResponse, HistoryEntry, HostFrame, MuxFrame, RpcReceipt,
   ModelProviderGroup, ModelSelection, RpcRequest, RpcResponse, RpcResult, ServerRequest, ServerResponse, SessionSummary,
@@ -2474,7 +2474,7 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       history: async (request) => {
         const log = logs.get(request.payload.sessionId) ?? []
         // Snapshot at request time, deliver after the transit delay (mirrors a real host under latency).
-        const page = pageOf(log, request.payload.beforeSeq, request.payload.maxMessages ?? 50)
+        const page = pageOf(withoutVoidedEvents(log), request.payload.beforeSeq, request.payload.maxMessages ?? 50)
         // Tail page carries the projections block (host parallel: one consistent
         // cut over the registered units; asOfSeq = window tail seq, -1 on an
         // empty log — the host's session.seq-1 convention).
@@ -2625,6 +2625,44 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
           setRunning(request.payload.sessionId, false)
         }
         return ok(request, { accepted: true as const })
+      },
+      rewind: (request) => {
+        const { sessionId } = request.payload
+        if (!sessions.some(summary => summary.sessionId === sessionId)) {
+          return err(request, {
+            code: 'session-not-found',
+            message: `no session ${sessionId}`,
+            details: { sessionId },
+          })
+        }
+        const log = logOf(sessionId)
+        let lastCompletedEnd = -1
+        let lastHumanSeq = -1
+        let lastHumanEndBefore = -1
+        for (const event of log) {
+          if (event.type === 'turn/end') {
+            lastCompletedEnd = event.seq
+          } else if (event.type === 'user/message' && event.data.source.kind === 'user') {
+            lastHumanSeq = event.seq
+            lastHumanEndBefore = lastCompletedEnd
+          }
+        }
+        if (lastHumanSeq === -1 || lastCompletedEnd < lastHumanSeq) {
+          return err(request, {
+            code: 'rewind-unavailable',
+            message: `session ${sessionId} has no completed exchange to rewind`,
+            details: { sessionId },
+          })
+        }
+        const event = {
+          type: 'session/rewind',
+          seq: log.length,
+          time: Date.now(),
+          data: { throughSeq: lastHumanEndBefore },
+        } as unknown as SessionEvent
+        log.push(event)
+        emitMux({ type: 'session/event', sessionId, event })
+        return ok(request, { throughSeq: lastHumanEndBefore, seq: event.seq })
       },
     },
     subagents: {
@@ -3214,6 +3252,7 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'session.attachment': return this.api.sessions.attachment(request)
       case 'session.updateQueue': return this.api.sessions.updateQueue(request)
       case 'session.cancel': return this.api.sessions.cancel(request)
+      case 'session.rewind': return this.api.sessions.rewind(request)
       case 'subagent.list': return this.api.subagents.list(request)
       case 'subagent.history': return this.api.subagents.history(request)
       case 'subagent.prompt': return this.api.subagents.prompt(request, signal)

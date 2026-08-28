@@ -159,6 +159,51 @@
   white-space: nowrap;
 }
 
+/* Oh-My-Dsh fork multi-line brand: the fork injects structured brand facts
+   (DSH_CLIENT_BRAND / _RELEASE / _BUILD) so the sidebar renders a four-line
+   title; the row, identity, and name shells grow to fit, and the collapsed
+   rail keeps its single-line 36px geometry. */
+.logoRow.ohMyDshLogoRow {
+  height: 66px;
+}
+
+.collapsed .logoRow.ohMyDshLogoRow {
+  height: 36px;
+}
+
+.ohMyDshBrandIdentity {
+  height: auto;
+}
+
+.ohMyDshBrandName {
+  height: auto;
+}
+
+.ohMyDshBrandBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ohMyDshBrandLine {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.brandMetaLine {
+  font-family: var(--ds-font-family-code);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 12px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+}
+
 .iconButton {
   flex: none;
   display: inline-flex;
@@ -324,6 +369,16 @@
   display: flex;
   justify-content: center;
   width: auto;
+}
+
+/* Collapsed (rail) footer actions stack as ONE vertical column of icon
+   buttons, each owning its own 36px geometry. The wide-mode row layout would
+   push sibling entries side by side, overflowing the 36px rail and clipping
+   the leftmost one (custom launcher plugins rely on the column). */
+.collapsed .footerActions {
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {

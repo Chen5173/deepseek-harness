@@ -11,7 +11,7 @@ import {
   resolveClientBuildEnvironment,
   writeClientBuildRecord,
 } from './client-build-environment.ts'
-import { ohMyDshClientTitle } from './oh-my-dsh-version.ts'
+import { ohMyDshBrandParts, ohMyDshClientTitle } from './oh-my-dsh-version.ts'
 import { pnpmInvocation } from './pnpm-invocation.ts'
 
 /** Run one package script through the package manager that invoked this build. */
@@ -39,9 +39,20 @@ function main(): void {
     ...process.env,
     DSH_CLIENT_COMMIT_HASH: repositoryCommitHash(root, process.env),
     // Personal forks default to the Oh-My-Dsh brand with a per-commit build
-    // number; an explicit DSH_CLIENT_TITLE or the official profile wins.
+    // number; an explicit DSH_CLIENT_TITLE or the official profile wins. The
+    // structured brand facts (brand / release / build) let the sidebar render
+    // the multi-line title; the official profile strips every DSH_CLIENT_*
+    // value it does not carry itself.
     ...(process.env.DSH_CLIENT_TITLE === undefined
-      ? { DSH_CLIENT_TITLE: ohMyDshClientTitle(root, process.env) }
+      ? (() => {
+        const { brand, release, build } = ohMyDshBrandParts(root, process.env)
+        return {
+          DSH_CLIENT_BRAND: brand,
+          DSH_CLIENT_RELEASE: release,
+          DSH_CLIENT_BUILD: build,
+          DSH_CLIENT_TITLE: ohMyDshClientTitle(root, process.env),
+        }
+      })()
       : {}),
   }
   const clientEnvironment = resolveClientBuildEnvironment(parentEnvironment, values.profile)
