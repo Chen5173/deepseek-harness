@@ -334,6 +334,27 @@ export class Session implements SessionFace {
   }
 
   /**
+   * Rewind: contract session.rewind 1:1 — void the exchange containing the
+   * last human prompt. The Host appends the marker, streams it back as a
+   * `session/rewind` frame, and {@link applyRewindMarker} drops the voided
+   * tail locally; failures land in promptError (same slot as cancel).
+   * @returns the rewind result (void boundary + marker seq).
+   */
+  async rewind(): Promise<RpcResult<{ throughSeq: number; seq: number }>> {
+    let result: RpcResult<{ throughSeq: number; seq: number }>
+    try {
+      result = (await this.api.sessions.rewind({ sessionId: this.sessionId })).result
+    } catch (error) {
+      result = transportError(error)
+    }
+    if (!result.ok) {
+      this.promptError = { op: 'stop', error: result.error }
+      this.notifier.markDirty()
+    }
+    return result
+  }
+
+  /**
    * Rename: contract session.rename 1:1. On success settle the 'title'
    * projection cell from the response's `{title, seq}` under the store's
    * higher-seq-wins rule (the push frame arriving later is a no-op replay),
@@ -686,10 +707,30 @@ export class Session implements SessionFace {
     this.notifier.markDirty()
   }
 
+  /**
+   * Drop the locally-held tail a `session/rewind` marker voids and rebuild the
+   * conversation window. At marker arrival the voided range is a contiguous
+   * tail of the window (the marker is the newest event), so the kept prefix
+   * stays seq-contiguous and later live events append past it without a gap.
+   * @param throughSeq - inclusive surviving boundary.
+   */
+  private applyRewindMarker(throughSeq: number): ConversationPublication {
+    const keptCount = this.events.reduce((count, event) => (event.seq <= throughSeq ? count + 1 : count), 0)
+    this.events.length = keptCount
+    this.views.length = keptCount
+    const entries: HistoryEntry[] = this.events.map((event, index) => {
+      const view = this.views[index]
+      return view === undefined ? { event } : { event, view }
+    })
+    this.conversation.replaceWindow(entries.map(conversationInput), this.hasMore)
+    return 'immediate'
+  }
+
   /** Seq-guarded append shared by stitching and the open-state live path. */
   private appendLive(event: SessionEvent, view?: ToolEventView): ConversationPublication {
     const tailSeq = this.windowTailSeq()
     if (tailSeq !== null && event.seq <= tailSeq) return 'none' // replay overlap, drop
+    if (event.type === 'session/rewind') return this.applyRewindMarker(event.data.throughSeq)
     this.events.push(event)
     this.views.push(view)
     if (event.type === 'turn/start') this.firstPromptPendingTurn = false

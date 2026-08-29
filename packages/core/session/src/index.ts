@@ -30,7 +30,11 @@ export { interruptedTurnClosers, TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN } from '
 export { decodeStorageRecord, packChunkRuns } from './chunk-rows.ts'
 export type { ChunkRow, StorageRecord } from './chunk-rows.ts'
 export type { SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult } from './surface.ts'
-export { deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSurfaceEvent, isSurfaceEvent, isSurfaceEligibleType } from './surface.ts'
+export {
+  deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSurfaceEvent, isSurfaceEvent,
+  isSurfaceEligibleType, rewindRuleOf, withoutVoidedEvents,
+} from './surface.ts'
+export type { RewindRule } from './surface.ts'
 export { canonicalHeader, foldRequestHeader, headerEquals } from './request-header.ts'
 export { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
 
@@ -652,6 +656,29 @@ export class Session {
         if (entry.detachRequested && !entry.announcing) entry.detach()
       }
     }
+  }
+
+  /**
+   * Append a `session/rewind` marker, logically voiding every event with
+   * `throughSeq < seq <= marker.seq`. The raw log stays append-only — the
+   * marker rides the ordinary append pipeline (surface fold, observers,
+   * durability flush) and every rewind-aware consumer drops the voided range.
+   *
+   * Validation is fold-boundary validation (see {@link rewindRuleOf}):
+   * `throughSeq` must be `-1` or the seq of a completed `turn/end` that is
+   * still earlier than the marker, and the voided range must not contain an
+   * open turn. Callers must guarantee the session is between turns (an idle
+   * agent): the checks here refuse a cut through an open turn but cannot know
+   * whether a driver is about to open one.
+   *
+   * @param throughSeq - inclusive boundary that survives: `-1` voids the whole
+   *   prefix (the empty session), otherwise a completed `turn/end` seq.
+   * @returns the logged marker event.
+   * @throws when the boundary is not a completed-turn cut or the voided range
+   *   contains an open turn.
+   */
+  rewind(throughSeq: number): SessionEvent<'session/rewind'> {
+    return this.append('session/rewind', { throughSeq })
   }
 
   /** Cached fold of the request-header events — see {@link requestHeader}. */

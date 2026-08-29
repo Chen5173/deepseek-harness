@@ -62,6 +62,7 @@ function scriptedApi(overrides: {
       }),
       updateQueue: r => ok(r, { accepted: true as const }),
       cancel: r => ok(r, { accepted: true as const }),
+      rewind: r => ok(r, { throughSeq: -1, seq: 0 }),
       ...overrides.sessions,
     },
     subagents: {

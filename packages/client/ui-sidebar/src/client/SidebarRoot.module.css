@@ -326,6 +326,16 @@
   width: auto;
 }
 
+/* Collapsed (rail) footer actions stack as ONE vertical column of icon
+   buttons, each owning its own 36px geometry. The wide-mode row layout would
+   push sibling entries side by side, overflowing the 36px rail and clipping
+   the leftmost one (custom launcher plugins rely on the column). */
+.collapsed .footerActions {
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .wide,
   .fading > *,

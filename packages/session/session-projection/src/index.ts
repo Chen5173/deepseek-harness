@@ -19,6 +19,7 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { ZodType } from 'zod'
+import { withoutVoidedEvents } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 
 declare module '@deepseek-ai/cordis' {
@@ -464,14 +465,37 @@ export class SessionProjectionRegistry extends Service {
   private cellFor(registration: Registration, session: Session): UnitCell {
     let cell = registration.cells.get(session)
     if (cell === undefined) {
-      cell = this.buildCell(registration.def, session.events)
+      // Fold the VISIBLE log (rewind rule applied) so a lazily built cell
+      // after a rewind matches the marker-driven rebuild and a cold reload
+      // cannot resurrect voided state.
+      cell = this.buildCell(registration.def, withoutVoidedEvents(session.events))
       registration.cells.set(session, cell)
     }
     return cell
   }
 
-  /** Eager drive: pass one committed event through every registered unit; notify on changed references. */
+  /**
+   * Eager drive: pass one committed event through every registered unit; notify on changed references.
+   * A `session/rewind` marker voids a log range, so every cell refolds from
+   * init over the visible events instead of folding the marker itself.
+   */
   private drive(session: Session, event: SessionEvent): void {
+    if (event.type === 'session/rewind') {
+      const visible = withoutVoidedEvents(session.events)
+      for (const registration of this.registrations.values()) {
+        const rebuilt = this.buildCell(registration.def, visible)
+        const old = registration.cells.get(session)
+        registration.cells.set(session, rebuilt)
+        if (registration.def.wire !== undefined && this.listeners.size > 0 && old !== undefined
+          && !Object.is(old.state, rebuilt.state)) {
+          const value = registration.def.wire.viewSchema.parse(registration.def.wire.view(rebuilt.state))
+          for (const listener of this.listeners) {
+            listener(session, registration.def.key as Extract<keyof SessionProjectionMap, string>, value, rebuilt.observedSeq)
+          }
+        }
+      }
+      return
+    }
     for (const registration of this.registrations.values()) {
       let cell = registration.cells.get(session)
       if (cell === undefined) {

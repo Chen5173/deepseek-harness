@@ -223,27 +223,32 @@ window.__ModuleLoader__.load({
           const snap = svc.list.getSnapshot()
           const byId = snap && snap.byId ? snap.byId : {}
           const ids = Object.keys(byId)
+          // Match against the displayed title when present (the row text the
+          // user sees), falling back to the durable title: a titleless session
+          // (never prompted, or rewound to empty) displays its directory
+          // basename, and that is what the sidebar dispatched.
+          const rowTitle = (s) => normalizeTitle(s && (s.displayTitle || s.title))
           for (const id of ids) {
             const s = byId[id]
-            if (s && normalizeTitle(s.title) === want) {
-              return { sessionId: id, title: s.title, running: s.running === true }
+            if (s && rowTitle(s) === want) {
+              return { sessionId: id, title: s.title || s.displayTitle, running: s.running === true }
             }
           }
           if (wantBase) {
             for (const id of ids) {
               const s = byId[id]
-              if (s && stripForkSuffix(s.title) === wantBase) {
-                return { sessionId: id, title: s.title, running: s.running === true }
+              if (s && stripForkSuffix(rowTitle(s)) === wantBase) {
+                return { sessionId: id, title: s.title || s.displayTitle, running: s.running === true }
               }
             }
           }
           let best = null
           for (const id of ids) {
             const s = byId[id]
-            if (!s || !s.title) continue
-            const t = normalizeTitle(s.title)
+            if (!s || !rowTitle(s)) continue
+            const t = rowTitle(s)
             if (t && (t.indexOf(want) >= 0 || want.indexOf(t) >= 0)) {
-              best = { sessionId: id, title: s.title, running: s.running === true }
+              best = { sessionId: id, title: s.title || s.displayTitle, running: s.running === true }
             }
           }
           if (best) return best
@@ -444,57 +449,50 @@ window.__ModuleLoader__.load({
     }
 
     // --- sidebar session-row menu injection ------------------------------------
-    // rc.6's session-row "..." menu (rename/fork/archive) is hard-coded in
-    // ui-workspace with no extension slot, so the delete item is injected at
-    // the DOM level. Clicking it matches the row title against the host
-    // session list and opens the shared dialog WITHOUT switching sessions.
+    // The session-row "..." menu (open-workspace / rename / regenerate / fork /
+    // archive) is hard-coded in ui-workspace with no row-level slot, so the
+    // delete row is added at the DOM level, LAST in the list and styled as a
+    // destructive row.
+    //
+    // Two shell facts drive the shape (packages/client/ui-primitives/src/Menu.tsx):
+    //   - the row menu renders with `portal`, so the open list is a document.body
+    //     child with NO ancestor link back to the row;
+    //   - items live inside the list's scroll viewport (`.viewport`), each as
+    //     `div.itemWrap > button[role=menuitem].item > .itemIcon + .itemLabel`,
+    //     and the shell's own destructive rows carry `.danger`
+    //     (color: --dsw-alias-state-error-primary + danger hover fill).
+    // So the injected row CLONES a real item (padding, hover, ellipsis and type
+    // all keep tracking the shell's stylesheet) instead of hand-rolling styles,
+    // and is appended inside the viewport rather than after it, where the height
+    // cap and the menu box would clip it.
+    //
+    // Clicking matches the row title against the client's session list and opens
+    // the shared dialog WITHOUT switching sessions.
     // This module is composed into both the desktop client and web.
 
     var TRASH_PATH = 'M14.4782 4.84067L14.2138 10.1152C14.1102 12.1872 14.067 13.0115 13.3866 13.9607C13.1044 14.3546 12.7498 14.6912 12.3424 14.9535C11.8239 15.2872 11.2415 15.4316 10.5585 15.4998C9.88727 15.5668 9.04946 15.5656 7.99998 15.5656C6.95051 15.5656 6.1127 15.5668 5.44142 15.4998C4.75851 15.4316 4.17602 15.2872 3.65753 14.9535C3.25012 14.6912 2.89559 14.3546 2.61332 13.9607C1.93296 13.0115 1.88979 12.1872 1.78619 10.1152L1.52179 4.84067L2.89006 4.77277L3.15343 10.0463C3.26221 12.2218 3.32452 12.6015 3.72646 13.1624C3.90825 13.4161 4.13686 13.6334 4.39927 13.8023C4.66204 13.9714 5.00263 14.0792 5.57825 14.1367C6.16562 14.1953 6.92298 14.1963 7.99998 14.1963C9.07699 14.1963 9.83434 14.1953 10.4217 14.1367C10.9973 14.0792 11.3379 13.9714 11.6007 13.8023C11.8631 13.6334 12.0917 13.4161 12.2735 13.1624C12.6755 12.6015 12.7378 12.2218 12.8465 10.0463L13.1099 4.77277L14.4782 4.84067ZM5.43011 6.22849H6.7994V11.3909H5.43011V6.22849ZM9.20056 6.22849H10.5699V11.3909H9.20056V6.22849ZM8.53597 0.434431C9.17976 0.434431 9.6522 0.426926 10.0966 0.571258C10.2357 0.616451 10.3717 0.672554 10.502 0.738948C10.9182 0.951107 11.2464 1.29099 11.7015 1.74612L12.4978 2.54136H15.3742V3.91169H0.625732V2.54136H3.50218L4.29845 1.74612C4.75358 1.29099 5.08174 0.951107 5.49801 0.738948C5.62831 0.672554 5.76425 0.616451 5.90334 0.571258C6.34776 0.426926 6.82021 0.434431 7.46399 0.434431H8.53597ZM7.46399 1.80476C6.73208 1.80476 6.51641 1.81187 6.32617 1.87369C6.25545 1.89667 6.18668 1.92533 6.12041 1.95907C5.96398 2.03878 5.82348 2.16253 5.44142 2.54136H10.5585C10.1765 2.16253 10.036 2.03878 9.87955 1.95907C9.81329 1.92533 9.74452 1.89667 9.6738 1.87369C9.48356 1.81187 9.26789 1.80476 8.53597 1.80476H7.46399Z'
+
+    // The row title cell also carries the "[workspace] " prefix the sidebar
+    // renders in workspace mode; the list store holds the bare title.
+    function rowTitleOf(row) {
+      var titleEl = row.querySelector('[class*=title]')
+      // innerText respects rendered text, but it is not universal (jsdom, and
+      // any engine without a layout pass, leaves it undefined); textContent is
+      // the same string for a single title cell and never throws.
+      var text = titleEl ? String(titleEl.innerText || titleEl.textContent || '').trim() : ''
+      return text.replace(/^\[[^\]]*\]\s*/, '')
+    }
 
     // Dispatch the row's title to the shared dialog; the dialog resolves the
     // session id from the client's list store (same data the sidebar shows).
     // Never switches the active conversation and needs no host round-trip.
     function openDeleteFlow(row) {
-      if (!row) return
-      var titleEl = row.querySelector('[class*=title]')
-      var title = titleEl ? String(titleEl.innerText || '').trim() : ''
+      var title = rowTitleOf(row)
       if (!title) return
       window.dispatchEvent(new CustomEvent(EVENT, { detail: { title } }))
     }
 
-    function ensureSidebarDeleteItem() {
-      var menu = document.querySelector('[role=menu]')
-      if (!menu) return
-      if (menu.querySelector('[data-chameleon-delete]')) return
-      var row = findOpenSessionRow()
-      if (!row) return // not a session-row menu
-      var item = document.createElement('button')
-      item.type = 'button'
-      item.setAttribute('role', 'menuitem')
-      item.setAttribute('data-chameleon-delete', '1')
-      item.style.cssText = [
-        'display:flex', 'align-items:center', 'gap:8px', 'width:100%',
-        'padding:6px 12px', 'border:none', 'background:transparent',
-        'color:var(--dsw-alias-state-error-primary,#e5484d)',
-        'font:inherit', 'font-size:13px', 'line-height:20px',
-        'text-align:left', 'border-radius:6px', 'cursor:pointer',
-      ].join(';')
-      item.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex:none"><path d="' + TRASH_PATH + '" fill="currentColor"/></svg><span></span>'
-      item.querySelector('span').textContent = __t('menu.delete')
-      item.addEventListener('mouseenter', function () {
-        item.style.background = 'var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.14))'
-      })
-      item.addEventListener('mouseleave', function () {
-        item.style.background = 'transparent'
-      })
-      item.addEventListener('click', function () { openDeleteFlow(row) })
-      var sep = document.createElement('div')
-      sep.style.cssText = 'height:1px;margin:4px 8px;background:var(--dsw-alias-border-l1,rgba(128,128,128,.2))'
-      menu.appendChild(sep)
-      menu.appendChild(item)
-    }
-
+    /** The one session row whose "..." menu is open, or null. */
     function findOpenSessionRow() {
       var rows = document.querySelectorAll('[class*=sessionRow]')
       for (var i = 0; i < rows.length; i++) {
@@ -503,13 +501,145 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /**
+     * The open menu list. A portaled list has no ancestor link to its row, so
+     * the caller proves a session-row menu is open first; the LAST rendered,
+     * item-bearing list wins because a fresh portal appends after any menu that
+     * is still in the DOM (e.g. a non-portaled model picker).
+     */
+    function findOpenMenuList() {
+      var menus = document.querySelectorAll('[role=menu]')
+      var found = null
+      for (var i = 0; i < menus.length; i++) {
+        var menu = menus[i]
+        if (menu.getClientRects().length === 0) continue // hidden pre-render / closed
+        if (!menu.querySelector('[role=menuitem]')) continue
+        found = menu
+      }
+      return found
+    }
+
+    /** Where items actually live inside a list (its scroll viewport). */
+    function itemContainer(menu) {
+      var viewport = menu.querySelector('[class*=viewport]')
+      if (viewport && viewport.querySelector('[role=menuitem]')) return viewport
+      return menu
+    }
+
+    /** The last real item wrapper, used as the markup template for the clone. */
+    function templateItem(container) {
+      var items = container.querySelectorAll('[role=menuitem]')
+      var last = items.length ? items[items.length - 1] : null
+      if (!last) return null
+      var wrap = last.parentElement
+      return wrap && wrap !== container ? wrap : last
+    }
+
+    /**
+     * The shell's destructive-row class, harvested from the loaded stylesheets.
+     * CSS-module names are content-hashed per build (e.g. z_yZ2G_danger), so the
+     * local `danger` suffix plus the error token is the only stable handle.
+     * Cached; an empty string records "looked, not found".
+     */
+    var dangerClass
+    function findDangerClass() {
+      if (dangerClass !== undefined) return dangerClass || null
+      var sheets = document.styleSheets
+      for (var i = 0; i < sheets.length; i++) {
+        var rules
+        try { rules = sheets[i].cssRules } catch { continue } // cross-origin sheet
+        if (!rules) continue
+        for (var j = 0; j < rules.length; j++) {
+          var rule = rules[j]
+          var selector = rule.selectorText
+          if (!selector || !/[._-]danger\b/.test(selector)) continue
+          if (String(rule.style && rule.style.color || '').indexOf('--dsw-alias-state-error-primary') < 0) continue
+          var match = /([A-Za-z0-9_-]*danger)\b/.exec(selector)
+          if (match) { dangerClass = match[1]; return dangerClass }
+        }
+      }
+      dangerClass = ''
+      return null
+    }
+
+    /** Close the row menu the way the trigger does, so no session is switched. */
+    function closeRowMenu(row) {
+      var trigger = row.querySelector('[class*=rowActions] button')
+      if (trigger) trigger.click()
+    }
+
+    function ensureSidebarDeleteItem() {
+      // Cheapest possible guard: this runs on every body mutation, and no menu
+      // is open almost all of the time.
+      if (!document.querySelector('[role=menu]')) return
+      var menu = findOpenMenuList()
+      if (!menu || menu.querySelector('[data-chameleon-delete]')) return
+      var row = findOpenSessionRow()
+      if (!row) return // not a session-row menu
+      var container = itemContainer(menu)
+      var template = templateItem(container)
+      if (!template) return
+
+      // Clone a real row so the injected item inherits the shell's own cell
+      // geometry, hover fill and label ellipsis instead of re-deriving them.
+      var item = template.cloneNode(true)
+      var button = item.querySelector('[role=menuitem]') || item
+      button.setAttribute('role', 'menuitem')
+      button.setAttribute('data-chameleon-delete', '1')
+      button.removeAttribute('aria-haspopup')
+      button.removeAttribute('aria-expanded')
+      button.removeAttribute('disabled')
+      // The template's own selection state and trailing check do not travel.
+      button.removeAttribute('aria-selected')
+      var check = button.querySelector('[class*=check]')
+      if (check) check.remove()
+      var classes = String(button.className || '').split(/\s+/)
+      for (var k = 0; k < classes.length; k++) {
+        if (classes[k].indexOf('selected') >= 0) button.classList.remove(classes[k])
+      }
+
+      var danger = findDangerClass()
+      if (danger) button.classList.add(danger)
+      // Inline floor: red even before the stylesheet scan can succeed.
+      button.style.color = 'var(--dsw-alias-state-error-primary,#e5484d)'
+
+      var icon = button.querySelector('[class*=itemIcon]')
+      if (icon) {
+        icon.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex:none"><path d="' + TRASH_PATH + '" fill="currentColor"/></svg>'
+      }
+      var label = button.querySelector('[class*=itemLabel]')
+      if (label) {
+        label.setAttribute('data-chameleon-delete-label', '1')
+        label.textContent = __t('menu.delete')
+      } else {
+        button.textContent = __t('menu.delete')
+      }
+
+      button.addEventListener('click', function (e) {
+        e.stopPropagation()
+        closeRowMenu(row)
+        openDeleteFlow(row)
+      })
+
+      // A separator keeps the destructive row visually cut off from the verbs,
+      // matching how the shell groups its own rows.
+      var existing = menu.querySelector('[class*=separator]')
+      var edge = existing ? existing.cloneNode(true) : document.createElement('div')
+      if (!existing) {
+        edge.style.cssText = 'height:1px;margin:4px 8px;background:var(--dsw-alias-border-l1,rgba(128,128,128,.2))'
+      }
+      container.appendChild(edge)
+      container.appendChild(item)
+    }
+
     // Keep an already-open sidebar menu's label in the active language when
     // the locale switches (fresh menus already read `__t` at creation time).
+    // The label span is targeted directly: the icon span is also a <span> and
+    // would otherwise be overwritten with the copy.
     function refreshSidebarDeleteLabel() {
-      const items = document.querySelectorAll('[data-chameleon-delete]')
-      for (let i = 0; i < items.length; i++) {
-        const span = items[i].querySelector('span')
-        if (span) span.textContent = __t('menu.delete')
+      const labels = document.querySelectorAll('[data-chameleon-delete-label]')
+      for (let i = 0; i < labels.length; i++) {
+        labels[i].textContent = __t('menu.delete')
       }
     }
 

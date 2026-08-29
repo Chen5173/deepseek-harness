@@ -14,7 +14,7 @@ import {
   renderConfigDump,
   type ConfigDumpLayer,
 } from '@deepseek-ai/dsh-app-boot'
-import { homePatchPath, prepareProfile, PROFILE_ROOT_FILENAME } from './profile-boot.ts'
+import { filterProfileLayers, homePatchPath, prepareProfile, PROFILE_ROOT_FILENAME } from './profile-boot.ts'
 
 const NAME = 'dsh'
 
@@ -26,10 +26,15 @@ const NAME = 'dsh'
  * (the recovery diagnostic for a broken `cordis.patch.yml`, which is then
  * never parsed).
  * @param patches - `--patch` overlay paths, in argv order.
+ * @param pluginsOnly - plugin bundles to keep beside the profile's base shell; empty keeps every bundle.
+ * @param noPlugins - true prints the profile's base shell bundles only, with no plugin bundles.
  */
-export function runDumpConfig(profile: string, defaultOnly: boolean, patches: readonly string[]): void {
+export function runDumpConfig(
+  profile: string, defaultOnly: boolean, patches: readonly string[],
+  pluginsOnly: readonly string[] = [], noPlugins = false,
+): void {
   const loaded = prepareProfile(profile, !defaultOnly)
-  const layers: ConfigDumpLayer[] = loaded.layers.map(layer => ({
+  const layers: ConfigDumpLayer[] = filterProfileLayers(profile, loaded.layers, pluginsOnly, noPlugins).map(layer => ({
     label: layer.packageName,
     patches: layer.patches,
   }))

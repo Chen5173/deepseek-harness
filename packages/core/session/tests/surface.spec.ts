@@ -8,6 +8,8 @@ import {
   isReplacementSurfaceEvent,
   isSurfaceEligibleType,
   isSurfaceEvent,
+  rewindRuleOf,
+  withoutVoidedEvents,
 } from '@deepseek-ai/dsh-session'
 import { SurfaceManager } from '@deepseek-ai/dsh-session/surface'
 import {
@@ -962,5 +964,113 @@ describe('SurfaceManager.replaceGeneration', () => {
       content: [{ type: 'text', text: 'summary' }], source: { kind: 'plugin', plugin: 'compact' },
     }), { surfaceOp: { op: 'replace', start: nodes[0]!, end: nodes[1]! }, sourceEventSeqs: [nodes[0]!, nodes[1]!] })
     expect(s.surface.replaceGeneration).toBe(1)
+  })
+})
+
+describe('session/rewind', () => {
+  /** Two completed exchanges: turn 1 ends at `boundary`, then turn 2. */
+  function twoTurnSession(): { s: Session; boundary: number } {
+    const s = Session.create(SessionId('rw'))
+    const ask = (text: string) => createUserMessage({
+      content: [{ type: 'text', text }], source: { kind: 'user' },
+    })
+    const answer = (text: string) => createMessage({
+      role: 'assistant',
+      content: [{ type: 'text', text }],
+      source: { kind: 'model', provider: 'mock', model: 'mock' },
+    })
+    s.append('turn/start', { turn: 1 })
+    s.append('user/message', ask('q1'), { surfaceOp: 'append' })
+    s.append('assistant/message', { turn: 1, step: 1, message: answer('a1') }, { surfaceOp: 'append' })
+    s.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const boundary = s.seq - 1
+    s.append('turn/start', { turn: 2 })
+    s.append('user/message', ask('q2'), { surfaceOp: 'append' })
+    s.append('assistant/message', { turn: 2, step: 1, message: answer('a2') }, { surfaceOp: 'append' })
+    s.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    return { s, boundary }
+  }
+
+  it('voids the last exchange from the surface and derived history', () => {
+    const { s, boundary } = twoTurnSession()
+    const marker = s.rewind(boundary)
+    expect(marker.type).toBe('session/rewind')
+    expect(marker.data.throughSeq).toBe(boundary)
+    // The voided turn's messages leave the model-visible surface entirely.
+    expect(s.surface.nodes).toEqual([1, 2])
+    const messages = s.deriveMessages()
+    expect(messages).toHaveLength(2)
+    expect(messages[0]?.content).toEqual([{ type: 'text', text: 'q1' }])
+    expect(messages[1]?.content).toEqual([{ type: 'text', text: 'a1' }])
+    expect(s.surface.replaceGeneration).toBe(1)
+  })
+
+  it('throughSeq -1 voids everything (the empty session)', () => {
+    const { s } = twoTurnSession()
+    s.rewind(-1)
+    expect(s.surface.nodes).toEqual([])
+    expect(s.deriveMessages()).toEqual([])
+  })
+
+  it('later appends rejoin the surface after the marker', () => {
+    const { s, boundary } = twoTurnSession()
+    s.rewind(boundary)
+    s.append('turn/start', { turn: 2 })
+    s.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'q2-again' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    const messages = s.deriveMessages()
+    expect(messages).toHaveLength(3)
+    expect(messages[2]?.content).toEqual([{ type: 'text', text: 'q2-again' }])
+  })
+
+  it('rejects a boundary that is not a completed turn/end', () => {
+    const { s } = twoTurnSession()
+    // seq 1 is the first user/message, not a turn boundary.
+    expect(() => s.rewind(1)).toThrow(/not a completed turn\/end/)
+  })
+
+  it('rejects out-of-range throughSeq values', () => {
+    const { s } = twoTurnSession()
+    expect(() => s.rewind(s.seq)).toThrow()
+    expect(() => s.rewind(-2)).toThrow()
+  })
+
+  it('rejects a cut through an open turn', () => {
+    const s = surfaceSession()
+    s.append('turn/start', { turn: 2 })
+    expect(() => s.rewind(-1)).toThrow(/open turn/)
+  })
+
+  it('withoutVoidedEvents keeps session/title events from voided ranges', () => {
+    const { s, boundary } = twoTurnSession()
+    // A title generated AFTER the boundary turn (it names the conversation).
+    s.append('session/title', { title: '会话名', messageSeqs: [5], source: { kind: 'fallback' } })
+    const titleSeq = s.seq - 1
+    s.rewind(boundary)
+    const visible = withoutVoidedEvents(s.events)
+    expect(visible.find(event => event.type === 'session/title')?.seq).toBe(titleSeq)
+    expect(visible.find(event => event.type === 'session/rewind')).toBeUndefined()
+    expect(visible.find(event => event.type === 'user/message')?.seq).toBe(1)
+    expect(visible.some(event => event.seq === 5)).toBe(false)
+  })
+
+  it('rewindRuleOf reports the last marker and withoutVoidedEvents drops the voided range', () => {
+    const { s, boundary } = twoTurnSession()
+    s.rewind(boundary)
+    // A new exchange after the marker.
+    s.append('turn/start', { turn: 2 })
+    s.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'q2-again' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    s.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    const rule = rewindRuleOf(s.events)
+    expect(rule?.throughSeq).toBe(boundary)
+    const visible = withoutVoidedEvents(s.events)
+    const visibleTypes = visible.map(event => event.type)
+    // turn1 (start/user/assistant/end), then turn2 redo: marker and voided
+    // turn 2 events (start, q2, a2, end) are gone.
+    expect(visibleTypes).toEqual(['turn/start', 'user/message', 'assistant/message', 'turn/end', 'turn/start', 'user/message', 'turn/end'])
+    expect(visible.every(event => event.type !== 'session/rewind')).toBe(true)
   })
 })

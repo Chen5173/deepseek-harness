@@ -26,6 +26,16 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+# Compose 命令探测：优先 docker compose（v2），旧版 Docker 回退 docker-compose（v1）。
+if docker --help 2>/dev/null | grep -qw compose; then
+  COMPOSE_CMD=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker-compose)
+else
+  say "✗ 未找到 docker compose（v2 插件）或 docker-compose 可执行文件。"
+  exit 1
+fi
+
 if [ ! -f "$HOST_DOT_DSH/settings.yaml" ]; then
   say "✗ 宿主机没有 $HOST_DOT_DSH/settings.yaml（请确认 DSH_DOT_DSH 或 ~/.dsh 正确）。"
   exit 1
@@ -78,7 +88,7 @@ fi
 # ── 5. 重启 web 容器使配置生效 ────────────────────────────────
 if docker ps -a --format '{{.Names}}' | grep -qx "$WEB_CONTAINER"; then
   say "▶ 重启 web 容器使配置生效 ..."
-  docker compose -f "$COMPOSE_FILE" restart "$WEB_SERVICE" >/dev/null
+  "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" restart "$WEB_SERVICE" >/dev/null
   say "✓ 已重启 $WEB_CONTAINER"
 else
   say "▶ web 容器未在运行；配置已就绪，运行 start-docker.bat 启动即可。"

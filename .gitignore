@@ -4,6 +4,8 @@ node_modules/
 lib/
 # 例外：my-custom/vendor-plugins 里 vendored 插件的 lib/ 是运行代码，必须入库
 !my-custom/vendor-plugins/**/lib/
+# 例外：dsh-oh-my-dsh-config 的 lib/client.js 是手写客户端 bundle（运行代码），必须入库
+!my-custom/plugins/dsh-oh-my-dsh-config/lib/
 *.tsbuildinfo
 pnpm-debug.log
 .pnpm-store/

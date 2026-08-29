@@ -8,7 +8,6 @@
 
 /* v8 ignore file -- built-bin acceptance exercises this self-executing dispatch. */
 
-import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,25 +21,24 @@ import { parseDshArgs } from './args.ts'
  * Personal-fork build facts for `--version`. Active only inside the fork:
  * the base-commit marker file is what makes a checkout Oh-My-Dsh, so upstream
  * or installed builds without it keep the plain release version. The version
- * is `cv.1.0.<count-1>` (`cv.1.0.0` after the fork is squashed to one commit).
+ * is read from `my-custom/oh-my-dsh-build.txt` (e.g. `1.0.1`) — commits do
+ * not change it; only my-custom/bump-build.sh (or .bat) bumps the patch
+ * before a release/push.
  */
 function ohMyDshBuild(): { active: boolean; number: string } {
   try {
     const root = fileURLToPath(new URL('../../..', import.meta.url))
     const basePath = resolve(root, 'my-custom/oh-my-dsh-base.txt')
-    if (!existsSync(basePath)) return { active: false, number: '1.0.0' }
+    if (!existsSync(basePath)) return { active: false, number: '1.0.1' }
     const base = readFileSync(basePath, 'utf8').trim()
-    if (!/^[0-9a-f]{7,40}$/iu.test(base)) return { active: false, number: '1.0.0' }
-    const count = Number(
-      execFileSync('git', ['rev-list', '--count', 'HEAD', `^${base}`], {
-        cwd: root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim(),
-    )
-    return { active: true, number: `1.0.${Math.max(0, count - 1)}` }
+    if (!/^[0-9a-f]{7,40}$/iu.test(base)) return { active: false, number: '1.0.1' }
+    const buildPath = resolve(root, 'my-custom/oh-my-dsh-build.txt')
+    if (!existsSync(buildPath)) return { active: false, number: '1.0.1' }
+    const build = readFileSync(buildPath, 'utf8').trim()
+    if (!/^\d+\.\d+\.\d{1,6}$/.test(build)) return { active: false, number: '1.0.1' }
+    return { active: true, number: build }
   } catch {
-    return { active: false, number: '1.0.0' }
+    return { active: false, number: '1.0.1' }
   }
 }
 
@@ -63,6 +61,8 @@ switch (invocation.mode) {
       environment: loadLayeredEnv('dsh'),
       profile: invocation.profile,
       patchFiles: invocation.patches,
+      pluginsOnly: invocation.pluginsOnly,
+      noPlugins: invocation.noPlugins,
       args: invocation.args,
     })
     break
@@ -74,7 +74,10 @@ switch (invocation.mode) {
   }
   case 'dump-config': {
     const { runDumpConfig } = await import('./dump-config.ts')
-    runDumpConfig(invocation.profile, invocation.defaultOnly, invocation.patches)
+    runDumpConfig(
+      invocation.profile, invocation.defaultOnly, invocation.patches,
+      invocation.pluginsOnly, invocation.noPlugins,
+    )
     break
   }
   default:

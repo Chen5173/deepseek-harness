@@ -26,8 +26,10 @@ import {
   loadOverlayPatches,
   loadProfile,
   PROFILE_PATCH_FILENAME,
+  PROFILE_TEMPLATES,
   watchUserPatches,
   type Profile,
+  type ProfileLayer,
 } from '@deepseek-ai/dsh-app-boot'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
@@ -129,6 +131,42 @@ function allPatches(composed: ComposedProfile): PatchOptions[] {
 }
 
 /**
+ * Filter a profile's bundle layers to the boot's requested plugin scope.
+ *
+ * The profile's shipped template bundles are the base shell that stays in
+ * every scope: `--no-plugins` keeps them alone, while `--plugins-only` keeps
+ * them plus the named plugin bundles. An unscoped boot keeps every bundle.
+ * @param name - the profile name (its shipped template defines the base shell).
+ * @param layers - the profile's resolved bundle layers, in manifest order.
+ * @param pluginsOnly - plugin bundles to keep beside the base shell; empty keeps every bundle.
+ * @param noPlugins - true boots the base shell bundles only, with no plugin bundles.
+ * @returns the filtered layers, in manifest order.
+ */
+export function filterProfileLayers(
+  name: string,
+  layers: readonly ProfileLayer[],
+  pluginsOnly: readonly string[],
+  noPlugins: boolean,
+): ProfileLayer[] {
+  if (!noPlugins && pluginsOnly.length === 0) return [...layers]
+  const base = PROFILE_TEMPLATES[name] ?? []
+  if (base.length === 0) {
+    throw new Error(NAME + ': profile ' + JSON.stringify(name) + ' has no shipped base shell;'
+      + ' --no-plugins/--plugins-only apply to shipped profiles only')
+  }
+  const keep = new Set<string>(base)
+  if (!noPlugins) {
+    for (const plugin of pluginsOnly) keep.add(plugin)
+    const present = new Set(layers.map(layer => layer.packageName))
+    const missing = pluginsOnly.filter(plugin => !present.has(plugin))
+    if (missing.length > 0) {
+      throw new Error(NAME + ': --plugins-only names bundles not in profile ' + JSON.stringify(name) + ': ' + missing.join(', '))
+    }
+  }
+  return layers.filter(layer => keep.has(layer.packageName))
+}
+
+/**
  * Load `name` and compose its effective patch stack: bundle layers in
  * `dsh.profile.bundles` order (the base bundle gates the shell stacks by
  * platform on its own rows), the profile's user layer, the home-level user
@@ -137,16 +175,21 @@ function allPatches(composed: ComposedProfile): PatchOptions[] {
  * then the telemetry switch.
  * @param name - the profile name.
  * @param patchFiles - `--patch` overlay paths, in argv order.
+ * @param pluginsOnly - plugin bundles to keep beside the base shell; empty keeps every bundle.
+ * @param noPlugins - true boots the base shell bundles only, with no plugin bundles.
  * @returns the profile, its patch layers, and the composed row index.
  */
 function composeProfile(
   name: string,
   patchFiles: readonly string[],
+  pluginsOnly: readonly string[],
+  noPlugins: boolean,
 ): ComposedProfile {
   const profile = prepareProfile(name)
+  const keptLayers = filterProfileLayers(name, profile.layers, pluginsOnly, noPlugins)
   const homePatches = loadOptionalPatches(NAME, homePatchPath()) ?? []
   const overlays = patchFiles.flatMap(file => loadOverlayPatches(NAME, resolve(file)))
-  const bundlePatches = profile.layers.flatMap(layer => layer.patches)
+  const bundlePatches = keptLayers.flatMap(layer => layer.patches)
   const rows = new Map<string, EntryOptions>()
   for (const row of composeEntries([bundlePatches, profile.patches, homePatches, overlays])) {
     if (typeof row.id === 'string') rows.set(row.id, row)
@@ -178,6 +221,10 @@ export interface RunProfileOptions {
   profile: string
   /** `--patch` overlay paths, in argv order. */
   patchFiles: readonly string[]
+  /** Plugin bundles to keep beside the profile's base shell; empty keeps every bundle. */
+  pluginsOnly: readonly string[]
+  /** True boots the profile's base shell bundles only, with no plugin bundles. */
+  noPlugins: boolean
   /** The invocation's inner arguments, handed to the tree through `ctx.cmdlineArgs`. */
   args: readonly string[]
 }
@@ -205,7 +252,7 @@ function suppressShutdownError(ctx: Context, signal: AbortSignal, error: unknown
  * @returns the settled root context and the shutdown controller.
  */
 export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
-  const composed = composeProfile(options.profile, options.patchFiles)
+  const composed = composeProfile(options.profile, options.patchFiles, options.pluginsOnly, options.noPlugins)
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(async () => { await app.current?.fiber.dispose() })
   const signalShutdown = new AbortController()

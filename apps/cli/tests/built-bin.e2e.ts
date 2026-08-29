@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,24 +11,21 @@ const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 // The release version, including a prerelease such as 0.0.1-rc.1: `--version`
 // prints what this manifest carries, so no test may pin it to a literal.
 const cliVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
-// Oh-My-Dsh build counter: mirrors the bin.ts derivation (per-commit count
-// since my-custom/oh-my-dsh-base.txt), so `--version` expectations stay exact.
-const ohMyDshBuildNumber = (() => {
+// Oh-My-Dsh build stamp: mirrors the bin.ts derivation — reads the explicit
+// version file my-custom/oh-my-dsh-build.txt (commits do NOT bump it; only
+// my-custom/bump-build.sh runs before a release), so `--version` expectations
+// stay exact. A non-fork checkout (no base marker, or an unreadable/invalid
+// version file) falls back to the plain release version, same as bin.ts.
+const ohMyDshBuild = (() => {
   try {
-    const base = readFileSync(join(repoRoot, 'my-custom/oh-my-dsh-base.txt'), 'utf8').trim()
-    const count = Number(
-      execFileSync('git', ['rev-list', '--count', 'HEAD', `^${base}`], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-      }).trim(),
-    )
-    return String(count).padStart(4, '0')
+    const value = readFileSync(join(repoRoot, 'my-custom/oh-my-dsh-build.txt'), 'utf8').trim()
+    return /^\d+\.\d+\.\d{1,6}$/.test(value) ? value : undefined
   } catch {
-    return '0000'
+    return undefined
   }
 })()
-const expectedVersion = existsSync(join(repoRoot, 'my-custom/oh-my-dsh-base.txt'))
-  ? `Oh-My-Dsh ${cliVersion} cv.${ohMyDshBuildNumber}`
+const expectedVersion = existsSync(join(repoRoot, 'my-custom/oh-my-dsh-base.txt')) && ohMyDshBuild !== undefined
+  ? `Oh-My-Dsh ${cliVersion} cv.${ohMyDshBuild}`
   : cliVersion
 const dshBin = join(repoRoot, 'apps/cli/lib/bin.js')
 const invalidProvider = fileURLToPath(new URL('./fixtures/invalid-provider.cordis.yml', import.meta.url))

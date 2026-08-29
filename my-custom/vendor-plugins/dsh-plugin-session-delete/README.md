@@ -21,6 +21,30 @@ dsh plugin --profile <profile> add file:C:/path/to/dsh-plugin-session-delete
 - 删除链路：会话目录 + 投影缓存 + 工作区记账（经活动 storageDomain，内存/磁盘一致）
 - `workbench_session_delete` 工具：agent 可直接删除会话
 
+## 本 fork 的本地修改（相对上游 v0.3.1）
+
+- **行菜单注入改为「克隆真实菜单项 + 插进 `.viewport`」**：上游把注入项 `appendChild` 到
+  `[role=menu]` 容器末尾并自带一套内联样式。本 fork 的会话行菜单是 portal 渲染
+  （`packages/client/ui-primitives/src/Menu.tsx`），菜单项实际位于 `.viewport` 滚动容器内，
+  插到容器外会脱离滚动与 `max-height` 上限；自写样式也和外壳的 40px 单元格、hover 填充、
+  标签省略号不一致。现在克隆最后一个真实菜单项作模板（class 与几何完全跟随外壳），
+  只替换图标与文案。
+- **红色走外壳令牌**：追加外壳自己的 `.danger` 类（`--dsw-alias-state-error-primary` 文字色 +
+  danger hover 填充），与 ui-workspace 自己的「删除工作区」危险行同一套样式；危险类是
+  CSS module 哈希名，因此从已加载样式表按「局部名 danger + 该令牌」扫描取得，不硬编码哈希，
+  并保留一行内联色作为样式表尚未就绪时的兜底。
+- **点击后先关菜单再弹确认框**：复用行内 ⋯ 触发器（它自带 `stopPropagation`），不切换当前会话。
+- **标题读取更稳**：`innerText` 在无布局引擎的环境（jsdom 等）下是 `undefined`，
+  改为 `innerText || textContent`；并剥掉侧栏「显示工作区」模式渲染的 `[工作区] ` 前缀，
+  否则这类行永远匹配不到会话。
+- **注入定位更稳**：可见性判据从 `offsetParent`（`position:fixed` 元素恒为 `null`，会误判）
+  改为 `getClientRects()`；多个 `[role=menu]` 并存时取最后一个带菜单项的（新 portal 追加在后）。
+- **新增无浏览器验证脚本**：`scripts/verify-menu-injection.mjs`，19 项断言，jsdom 按外壳真实
+  DOM 形状搭桩（portal 菜单 / `.viewport` / `itemWrap > button.item > itemIcon + itemLabel` /
+  分隔线 / 带 `menuOpen` 的会话行），覆盖注入位置、danger 类、红色兜底、幂等、点击派发、
+  `[工作区]` 前缀剥离与「非会话行菜单不注入」。对任意 CSS module 命名形状都成立
+  （前缀换成 `Menu_` 复跑同样 19/19）。
+
 ## 后续开发计划
 
 - 添加更多针对会话的操作工具和选项

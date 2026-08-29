@@ -38,6 +38,17 @@ dsh --profile web --patch ./extra.yml --dump-config
 
 `--dump-default-config` 只打印组合包各层；`--dump-config` 额外加上 profile 的 `cordis.patch.yml`、home 级的 `$DSH_HOME/cordis.patch.yml` 和 `--patch` overlay。两者都会打印注释，标明每行由哪个文件提供，以及哪些 overlay 修改过它；`!!js` 表达式保持未求值，找不到目标的 patch 会报告到 stderr。dump 操作不会运行应用的命令行参数提供方，因此展示的是解析任何应用参数之前的组合配置树；如果调用中包含应用参数，dump 会拒绝该调用。
 
+### 插件范围启动
+
+可重复的 `--plugins-only <bundle>` 与 `--no-plugins` 用于限制实际挂载的 `dsh.profile.bundles` 层。两者都保留该 profile 随附模板的基础外壳组合包（对 `web` 而言是 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`），并去掉插件组合包——`--no-plugins` 去掉全部插件；`--plugins-only` 只保留列出的插件（按 manifest 中的组合包包名匹配，例如市场行 `dsh-market` 对应 `dshmarket`）。profile 自身的 `cordis.patch.yml`、home 层与 `--patch` overlay 仍然生效，因此针对被移除行的 id 定向 patch 只会产生无害的 `entry not found` 警告。两个 flag 互斥；无随附模板的自定义 profile 会拒绝这两个 flag。
+
+```sh
+dsh web --no-plugins                      # 仅基础外壳，不含任何插件组合包
+dsh web --plugins-only dshmarket          # 仅基础外壳 + 市场插件
+dsh web --plugins-only dshmarket --dump-config
+dsh web --no-plugins --port 8080 --no-open
+```
+
 ## 插件管理
 
 `dsh plugin --profile <name> <args...>` 在 profile 缺失时先初始化它（有随附模板的用模板，其他名称只装 `@deepseek-ai/dsh-base`），然后以 profile 目录为工作目录，把 `<args...>` 转发给 `pnpm`：`add`、`remove`、`why`、`update` 及其他所有 pnpm 子命令都照常可用；pnpm 必须在 PATH 上。相对路径 spec（`.`、`../plugin` 及其 `file:`/`link:` 形式）会先锚定到调用目录，因此在插件 checkout 中执行 `add .` 安装的是该 checkout，而不是 profile。每次成功运行后，系统都会根据当前安装状态更新 `dsh.profile.bundles`：如果某项依赖解析到的包在 manifest 中声明了 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`，该依赖就会加入配置层栈；如果某项依赖在 `update` 后获得该声明，也会随即激活。没有组合包声明的依赖仍作为普通依赖保留，并显示一次性警告；已移除的依赖则从配置层栈中删除。
@@ -64,13 +75,15 @@ dsh --profile tui
 
 ## Web 别名
 
-`dsh web` 是 `--profile web` 的硬编码别名；写在它之后的 flag 属于 web 应用，由组合包中的普通提供方解析。`--host` 和 `--port` 覆盖承载它们的那些行的组合取值，可重复的 `--trusted-host` 通过 `ctx.webRuntime.trustedHosts` 提供本次调用的 authority（部署表达式会拼接自己的 authority），`--no-open` 则只对本次调用关闭默认浏览器交接。客户端插件 HMR（热模块替换）接收器始终挂载，在单独运行的 `pnpm run dev:web` watcher 重建客户端 bundle 之前保持空闲。
+`dsh web` 是 `--profile web` 的硬编码别名；写在它之后的 flag 属于 web 应用，由组合包中的普通提供方解析。`--host` 和 `--port` 覆盖承载它们的那些行的组合取值，可重复的 `--trusted-host` 通过 `ctx.webRuntime.trustedHosts` 提供本次调用的 authority（部署表达式会拼接自己的 authority），`--no-open` 则只对本次调用关闭默认浏览器交接。启动器的插件范围 flag（`--no-plugins`、`--plugins-only <bundle>`）同样适用，因此只需一个 flag 即可启动纯市场或纯外壳的 web。客户端插件 HMR（热模块替换）接收器始终挂载，在单独运行的 `pnpm run dev:web` watcher 重建客户端 bundle 之前保持空闲。
 
 ```sh
 dsh web
 dsh web --no-open
 dsh web --patch ./extra.cordis.yml
 dsh web --dump-config
+dsh web --no-plugins
+dsh web --plugins-only dshmarket
 dsh web --help
 ```
 

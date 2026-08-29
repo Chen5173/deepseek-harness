@@ -6,7 +6,7 @@
 
 - **提交信息一律用中文**（以后都如此），**详细说明（body）也要翻译成中文并完整保留**，不要只留一行标题。
 - 提交信息**首行**写版本号，格式：`【个人定制版本号】: cv.<major>.<minor>.<patch>`，空一行后再写中文标题。
-  - 版本号 = `git rev-list --count HEAD ^<my-custom/oh-my-dsh-base.txt 中的基线>`，映射为 `cv.1.0.<count-1>`：定制系列压缩成一次提交后为 `cv.1.0.0`，此后每 commit 一次 patch +1（`cv.1.0.1`、`cv.1.0.2` …；与 Web / CLI 的 `cv.1.0.x` 版本号一致，见定制 5）。
+  - 版本号显式保存在 `my-custom/oh-my-dsh-build.txt`（当前 `1.0.1`，映射为 `cv.1.0.1`）：**提交不再改变版本号**，只在准备发版 / push 时跑 `my-custom/bump-build.sh`（或 `bump-build.bat`）手动 patch +1（与 Web / CLI 的 `cv.1.0.x` 版本号一致，见定制 5）。
   - 示例：
 
     ```
@@ -188,7 +188,7 @@ rm packages/host/apiproxy/src/fetch/random-uuid.ts \
 **后续升级：标题改为「会话内容总结」**（不再只看首条输入 + 首个回复）
 - packages/session/session-title-llm：新增 includeAssistantReplies——把整段对话（用户提示 + assistant 回复，按日志顺序）组装成 JSON conversation 交给命名模型总结；超出 maxInputBytes 时从中间裁剪（保留开头上下文 + 最近消息）。
 - packages/session/session-title-all-prompts-llm：默认开启 includeAssistantReplies（真正的会话总结提供器）。
-- packages/bundle/base/cordis.patch.yml：标题提供器换成 session-title-all-prompts-llm，maxInputBytes 8192 → 32768。
+- 标题提供器选择与预算参数**已移出源码**（定制 9 第 1 步）：`packages/bundle/base/cordis.patch.yml` 回到上游取值（first-prompt-llm / 5 词 / 10 字 / 4096 / 64），改由 `my-custom/plugins/dsh-oh-my-dsh-config/cordis.patch.yml` 承载「停用 base 行 + 插入 all-prompts 行」。**未安装该插件时标题回到上游行为**。
 - 效果：自动命名与「重新生成标题」都会基于整段对话内容生成标题，而非首句。
 
 **#2 时间分组**（Feat: group the session sidebar by calendar time buckets）
@@ -209,46 +209,54 @@ git revert --no-commit c3d2d6ccd2 65e737f461 c7b72240de <时间分组提交>
 git commit -m "revert: sidebar session-management customizations"
 ```
 
-## 定制 5：品牌名 + 自增版本号（Oh-My-Dsh <release> cv.<major>.<minor>.<patch>）
+## 定制 5：品牌名 + 显式版本号（Oh-My-Dsh <release> cv.<major>.<minor>.<patch>）
 
 ### 目的
 
-Web 左上角 / 浏览器标签页 / HTML 标题原本显示官方占位名 `DSH Local Build`。本定制把它改为个人 fork 品牌 `Oh-My-Dsh <release> cv.<major>.<minor>.<patch>`（与 `dsh -V` 完全同格式），版本号 = 自上游基线提交以来本分支的 commit 数映射为 `cv.1.0.<count-1>`：定制系列**压缩成一次提交后为 `cv.1.0.0`**，此后每 commit 一次 patch +1（`cv.1.0.1`、`cv.1.0.2` …），天然记录“我的修改”的进度。
+Web 左上角 / 浏览器标签页 / HTML 标题原本显示官方占位名 `DSH Local Build`。本定制把它改为个人 fork 品牌 `Oh-My-Dsh <release> cv.<major>.<minor>.<patch>`（与 `dsh -V` 完全同格式），版本号显式保存在 `my-custom/oh-my-dsh-build.txt` 并映射为 `cv.1.0.x`：**commit 不再让版本号 +1**，只在准备发版 / push 时手动跑 `bump-build` 脚本 patch +1——版本号跟随发布节奏，而不是 commit 计数。
 
 ### 展示效果
 
 - 左上角品牌名（侧栏，展开态）：`Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0 <7位commit>`（commit 徽标保留）。
 - 浏览器标签页 / HTML `<title>`：`Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0`。
 - CLI：`dsh -V` / `--version` 输出 `Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0`（与 Web 完全一致）。
-- 版本号 = 自基线提交以来本分支的 commit 数，映射为 `cv.1.0.<count-1>`；基线是定制系列起点 `b150a551b8`。
+- 版本号 = `my-custom/oh-my-dsh-build.txt` 中显式保存的 `X.Y.Z`（当前 `1.0.1`），映射为 `cv.1.0.x`；commit 不影响它，发版前用 `bump-build` 脚本手动 +1。
 
 ### 修改点
 
-- `scripts/oh-my-dsh-version.ts`（新增）：计算 build 版本（`git rev-list --count HEAD ^<base>` 得 count，映射为 `1.0.<count-1>`；支持 `DSH_OH_MY_DSH_BUILD` 显式覆盖，值形如 `1.0.0`），并拼出 `Oh-My-Dsh <release> cv.<build>`（release 读仓库根 package.json）。
-- `my-custom/oh-my-dsh-base.txt`（新增）：存上游基线提交 hash（定制系列的起点）。基线变更时改这一个文件即可。
-- `scripts/build.ts`：`pnpm run build` 时若未显式设置 `DSH_CLIENT_TITLE`，自动注入 `ohMyDshClientTitle()` 的结果；显式 `DSH_CLIENT_TITLE` 或官方 `--profile official`（`DeepSeek Harness`）仍优先。
-- `packages/client/ui-sidebar/src/client/SidebarRoot.tsx`：品牌回退文案改为读 `process.env.DSH_CLIENT_TITLE ?? 'DSH Local Build'`，个人构建时显示新品牌，无注入环境（测试 / 官方）仍显示旧占位名。
-- `apps/cli/src/bin.ts`：`readVersion()` 检测到 `my-custom/oh-my-dsh-base.txt`（fork 标记）时输出 `Oh-My-Dsh <release> cv.<build>`；无标记的官方/安装构建仍输出纯 release 版本。仓库根相对 artifact 解析，任意 cwd 下结果一致。
+- `my-custom/oh-my-dsh-base.txt`（新增）：存上游基线提交 hash（定制系列的起点），现在只作「是否 Oh-My-Dsh fork」的判定标记，不再参与版本计算。
+- `my-custom/oh-my-dsh-build.txt`（新增）：显式保存当前 build 版本 `X.Y.Z`（种子 `1.0.1`）。commit 不再改变它；发版 / push 前用 `bump-build` 脚本手动 patch +1。
+- `my-custom/bump-build.sh` / `bump-build.bat`（新增）：发版前手动 bump build 版本（patch +1）并写回 `oh-my-dsh-build.txt`。
+- `apps/cli/src/bin.ts`：`readVersion()` 检测到 `my-custom/oh-my-dsh-base.txt`（fork 标记）时**运行时**直读 `my-custom/oh-my-dsh-build.txt` 输出 `Oh-My-Dsh <release> cv.<build>`；无标记的官方/安装构建仍输出纯 release 版本。仓库根相对 artifact 解析，任意 cwd 下结果一致。
+- `my-custom/plugins/dsh-oh-my-dsh-config/`（插件，承载全部 Web 品牌，零内核改动）：
+  - 宿主半边 `src/index.js`：把品牌事实写进 `globalThis.__DSH_OHMY_BRAND__`，注入页内脚本改标签页标题（`src/title-fix.js`），并注入 `<style>` 管品牌自身元素样式；
+  - 客户端半边 `lib/client.js`（手写 `__ModuleLoader__` 工厂包）：注册 `sidebar.brand.name` 槽渲染多行品牌（品牌 / 版本 / commit）。
+- Web 侧已**零源码改动**：`scripts/build.ts` 的品牌注入、`scripts/oh-my-dsh-version.ts`、`SidebarRoot.tsx` / `SidebarRoot.module.css` 的品牌块全部回退上游（与上游零差异）。
 
 ### 使用方式
 
 ```sh
-pnpm run build   # 构建后 dsh web 与 dsh -V 均显示 Oh-My-Dsh <release> cv.1.0.0
-# 注意：单独跑 `pnpm run build:lib` 不会注入 DSH_CLIENT_TITLE，会把 Web 品牌回退成 DSH Local Build；
-# 改客户端代码后请用完整 `pnpm run build` 重构建以保留品牌。
-# 手动指定版本号（跳过 git 计数）：
-DSH_OH_MY_DSH_BUILD=1.0.0 pnpm run build
-# 手动指定完整标题（完全覆盖）：
-DSH_CLIENT_TITLE='Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0' pnpm run build
+# 发版 / push 前手动 bump 一次 build 版本（patch +1，1.0.1 → 1.0.2 …）：
+my-custom/bump-build.sh        # Linux / Git Bash
+my-custom/bump-build.bat       # Windows
+
+dsh -V   # CLI 运行时直读 oh-my-dsh-build.txt，立即生效，无需重构建
+# 重启 dsh web（宿主 + 客户端插件重新加载）后：
+#   侧栏品牌块、浏览器标签页标题均显示 Oh-My-Dsh <release> cv.1.0.x
+# Web 品牌全部由插件在运行时承载，无需重跑 pnpm run build
+# 手动指定版本号（覆盖文件值；Docker 构建等无 .git 场景走此路）：
+DSH_OH_MY_DSH_BUILD=1.0.1 dsh web
 ```
 
-> CLI 的 `-V` 在**运行时**实时取 git 计数（无需每次重新构建）；Web 品牌是**构建时**注入（需 `pnpm run build`）。两者共用同一个 `my-custom/oh-my-dsh-base.txt` 基线。
+> CLI 的 `-V` 在**运行时**直读 `my-custom/oh-my-dsh-build.txt`（无需重新构建）；Web 侧（侧栏品牌块 + 标签页标题）全部由 `dsh-oh-my-dsh-config` 插件在运行时承载：宿主半边算品牌事实，客户端半边注册侧栏槽。三者（CLI / 侧栏 / 标签页）读同一份 `oh-my-dsh-build.txt`，保持一致；`my-custom/oh-my-dsh-base.txt` 只作「是否 Oh-My-Dsh fork」的判定标记，不再参与版本计算。
 
 ### 回退
 
 ```sh
-git checkout HEAD -- scripts/build.ts packages/client/ui-sidebar/src/client/SidebarRoot.tsx apps/cli/src/bin.ts
-rm scripts/oh-my-dsh-version.ts my-custom/oh-my-dsh-base.txt
+# Web 品牌：从 profile 移除 dsh-oh-my-dsh-config 插件即可（dsh plugin remove 或删 bundles 行），
+# 标签页标题与侧栏回到官方 DSH Local Build，无任何源码残留。
+# CLI 品牌：git checkout HEAD -- apps/cli/src/bin.ts
+rm my-custom/oh-my-dsh-base.txt my-custom/oh-my-dsh-build.txt my-custom/bump-build.sh my-custom/bump-build.bat
 ```
 
 ## 定制 6：对话输入框模型名旁显示供应商
@@ -390,3 +398,89 @@ remote-web-ui:
 宿主机家目录可用 `DSH_DOT_DSH` 覆盖（默认 `~/.dsh`）。`codemaker` 这类走 `127.0.0.1` 的宿主机本地代理提供方在容器里不通，只有公网端点（如 ARK）可用。
 
 > 说明：把配置**打包进镜像**也可以做，但 API key 会固化进镜像、配置变更要重建镜像，且构建上下文拿不到 `~/.dsh`——不如同步脚本灵活，故不采用。
+
+## 定制 9：把定制提取成插件（进行中，第 1~2 步已落地）
+
+### 目的
+
+降低本 fork 与上游的 rebase 成本：能落到 profile 层的东西不再改 `packages/` 源码。
+
+### 已提取（第 1~2 步）
+
+见 `my-custom/plugins/dsh-oh-my-dsh-config/README.md`。零源码改动，承载三项：
+
+1. **定制 4(c) 的配置部分**：会话标题提供器换成「整段对话总结」实现包及其预算参数，
+   移到插件的 `cordis.patch.yml` 层（做法是「停用 base 行 + 插入新行」，
+   因为补丁行改 `name` 会被整条跳过）。
+2. **定制 5 的标签页标题部分**：经 `webserver/index-inject` 注入运行时脚本改写产品标题，
+   不再需要为改品牌重跑 `pnpm run build`。
+3. **定制 5 的侧栏品牌块**：客户端半边（手写 `__ModuleLoader__` 工厂包，零构建）注册
+   `sidebar.brand.name` 槽渲染多行品牌，挂载后 inline style 放宽外壳盒子几何
+   （不依赖哈希类名、不依赖 `:has()`，老浏览器也兼容）。
+
+### 源码回退状态（重复的部分不再双份承载）
+
+| 项 | 源码现状 |
+|---|---|
+| `packages/bundle/base/cordis.patch.yml` 的 `session-title-llm` 行 | **已回到上游**（first-prompt-llm / 5 词 / 10 字 / 4096 / 64），与上游零差异；标题定制改由插件层单独承载，验证见 `node my-custom/plugins/dsh-oh-my-dsh-config/scripts/verify.mjs`（含「仅一个标题提供器在跑」断言） |
+| `packages/bundle/base/package.json` 的 `@deepseek-ai/dsh-session-title-all-prompts-llm` 依赖行 | **保留**：workspace 解析需要它，删掉插件插入的那行就装不上；1 行成本，rebase 冲突面几乎为零 |
+| `scripts/build.ts` 的品牌注入 + `scripts/oh-my-dsh-version.ts` | **已回到上游**（注入块删除、脚本文件删除）：侧栏品牌由插件客户端半边读 `__DSH_OHMY_BRAND__` 全局渲染，不再需要构建期 `DSH_CLIENT_BRAND/_RELEASE/_BUILD` |
+| `packages/client/ui-sidebar/src/client/SidebarRoot.tsx` + `SidebarRoot.module.css` 的品牌块 | **已回到上游**（与上游零差异；module.css 里仅保留无关的 footerActions 折叠改动）：多行品牌由插件 `sidebar.brand.name` 槽 + 注入样式承载 |
+| `apps/cli/composition.md`（生成物） | 回退后重新与 base 取值一致（此前源码是 all-prompts、生成文档写 first-prompt，属漂移） |
+
+### 明确不提取（附原因）
+
+| 定制 | 原因 |
+|---|---|
+| 1 放开 `--host 0.0.0.0` 的守卫删除 | CLI/startup 层，插件不可达；且与定制 2 安全耦合，只提取危险的半边是负收益 |
+| 2 token 鉴权网关 | webserver 只有 exact/prefix/fallback 三张表，**没有请求分发前的过滤器注册口** |
+| 3 `crypto.randomUUID` 兜底 | 属内核 bug 修复（`fetch/client.ts` 的 mintRpcId），该走上游而非插件 |
+| 4(b) `lastActivityAt` 排序语义 | 改了 `sessionListMetadata` 投影单元与客户端 mux 帧推进，属投影语义 |
+| 7 会话行菜单项 | ui-workspace 的会话行菜单是硬编码，无行级 slot；新增的「删除会话」项走插件侧 DOM 注入（见定制 10），源码里的既有项（重新生成标题 / 打开工作区目录）仍属定制 4 |
+| 8 `session/rewind` | 新必需事件类型 + surface fold + RPC 表，三条插件硬墙全中 |
+| 9 `--no-plugins/--plugins-only` | CLI 与 profile 编排层，发生在任何插件挂载之前 |
+
+### 后续候选（未开工）
+
+时间分组列表（定制 4(d)）：技术上是「priority 遮蔽 single 槽」，代价是承接整张列表的上游演进，
+且与已装的 `dsh-better-sidebar` / `dsh-session-manager` 抢同一块 single 槽——开工前需要先定槽位仲裁。
+
+## 定制 10：会话行 ⋯ 菜单的「删除会话」（插件侧，零源码改动）
+
+### 目的
+
+会话行的三点菜单末尾多一项红色「删除会话」，点击弹风险确认框，确认后彻底删除
+（会话日志 + 投影缓存 + 工作区记账），不切换当前会话。
+
+### 承载
+
+`my-custom/vendor-plugins/dsh-plugin-session-delete`（@huanlin v0.3.1 的本地 fork）。
+行菜单在 ui-workspace 里是硬编码 + portal 渲染，无行级 slot，所以只能 DOM 注入；
+本次把注入实现改成**克隆真实菜单项**并插进 `.viewport` 末尾，红色复用外壳的 `.danger`
+（`--dsw-alias-state-error-primary`）。细节与逐条原因见该目录 README 的「本 fork 的本地修改」。
+
+删除链路本身不走 RPC——宿主没有 `session.delete`；插件在 host 半边注册
+`POST /__chameleon/session/delete`，并额外暴露 `workbench_session_delete` 工具给 agent。
+
+### 生效前提（重要）
+
+该插件**当前未装进任何 profile**（`~/.dsh/profiles/*/package.json` 里没有它），所以页面上看不到。
+启用：
+
+~~~sh
+dsh plugin --profile web add file:C:/Nt/dsh/my-custom/vendor-plugins/dsh-plugin-session-delete
+~~~
+
+然后重启 `dsh web`（宿主半边需要重启加载，重启会断开当前 GUI 会话）。
+
+### 验证
+
+~~~sh
+node my-custom/vendor-plugins/dsh-plugin-session-delete/scripts/verify-menu-injection.mjs
+~~~
+
+19 项断言，jsdom 按外壳真实 DOM 形状搭桩，覆盖注入位置（`.viewport` 末尾）、danger 类、
+红色兜底、幂等、点击派发与 `[工作区]` 前缀剥离、非会话行菜单不注入。不启动服务、不写仓库状态。
+
+页面级判据：侧栏任一会话行点 ⋯ → 菜单最底部出现红色「删除会话」（带垃圾桶图标、上方一条分隔线）
+→ 点击后菜单关闭并弹出确认框，勾选「我已了解后果」才能确认。

@@ -38,6 +38,17 @@ dsh --profile web --patch ./extra.yml --dump-config
 
 `--dump-default-config` prints only the bundle layers; `--dump-config` adds the profile's `cordis.patch.yml`, the home-level `$DSH_HOME/cordis.patch.yml`, and `--patch` overlays. Both print comments naming the file that supplied each row and every overlay that changed it; `!!js` expressions remain unevaluated, and unmatched patch targets are reported on stderr. A dump never runs app command-line providers, so it shows the composed tree before any app argument is resolved and rejects an invocation that carries app arguments.
 
+### Plugin-scoped boot
+
+Repeatable `--plugins-only <bundle>` and `--no-plugins` restrict which profile `dsh.profile.bundles` layers mount. Both keep the profile's shipped base-shell bundles (for `web`: `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`) and drop plugin bundles — `--no-plugins` drops every plugin, `--plugins-only` drops every plugin except the named ones (matched against the manifest's bundle package names, e.g. `dshmarket` for the market row `dsh-market`). The profile's own `cordis.patch.yml`, the home layer, and `--patch` overlays still apply, so an id-targeted patch for a dropped row is a harmless `entry not found` warning. The two flags are mutually exclusive, and a custom profile with no shipped template rejects both flags.
+
+```sh
+dsh web --no-plugins                      # base shell only, no plugin bundles
+dsh web --plugins-only dshmarket          # base shell + the market plugin only
+dsh web --plugins-only dshmarket --dump-config
+dsh web --no-plugins --port 8080 --no-open
+```
+
 ## Plugin management
 
 `dsh plugin --profile <name> <args...>` initializes the profile when missing (shipped template, or `@deepseek-ai/dsh-base` alone for other names), then forwards `<args...>` to `pnpm` with the profile directory as working directory — `add`, `remove`, `why`, `update`, and every other pnpm verb work unchanged; pnpm must be on PATH. Relative path specs (`.`, `../plugin`, and their `file:`/`link:` forms) are anchored to the invoking directory first, so `add .` from a plugin checkout installs that checkout, not the profile. After every successful run, `dsh.profile.bundles` is reconciled against the installed state: each dependency resolving to a package whose manifest declares `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` joins the layer stack (so an `update` that gains the declaration activates it), a bundle-less dependency stays plain with a one-time warning, and a removed dependency leaves the stack.
@@ -64,13 +75,15 @@ Git-hosted plugins that ship sources build during install through their `prepare
 
 ## Web alias
 
-`dsh web` is a hardcoded alias for `--profile web`; the flags after it belong to the web app, whose ordinary bundle provider parses them. `--host` and `--port` override the composed values of the rows that carry them, repeatable `--trusted-host` contributes invocation authorities through `ctx.webRuntime.trustedHosts` (a deployment expression concatenates its own authorities), and `--no-open` disables the default-browser handoff for this invocation. The client-plugin HMR receiver is always mounted and stays idle until a separate `pnpm run dev:web` watcher rebuilds client bundles.
+`dsh web` is a hardcoded alias for `--profile web`; the flags after it belong to the web app, whose ordinary bundle provider parses them. `--host` and `--port` override the composed values of the rows that carry them, repeatable `--trusted-host` contributes invocation authorities through `ctx.webRuntime.trustedHosts` (a deployment expression concatenates its own authorities), and `--no-open` disables the default-browser handoff for this invocation. The launcher's plugin-scope flags (`--no-plugins`, `--plugins-only <bundle>`) also apply here, so a market-only or plugin-free web shell is one flag away. The client-plugin HMR receiver is always mounted and stays idle until a separate `pnpm run dev:web` watcher rebuilds client bundles.
 
 ```sh
 dsh web
 dsh web --no-open
 dsh web --patch ./extra.cordis.yml
 dsh web --dump-config
+dsh web --no-plugins
+dsh web --plugins-only dshmarket
 dsh web --help
 ```
 

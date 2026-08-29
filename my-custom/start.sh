@@ -20,6 +20,21 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+# Compose 命令探测：Docker 19.03+ 提供 `docker compose`（v2 插件）；
+# 旧版（如 Docker Desktop 18.06，只有独立 docker-compose v1）没有该子命令，
+# 直接调用 `docker compose -f ...` 会报 "unknown shorthand flag: 'f' in -f"，
+# 因此按能力回退到 docker-compose，两种环境都能跑。
+if docker --help 2>/dev/null | grep -qw compose; then
+  COMPOSE_CMD=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker-compose)
+else
+  say "✗ 未找到 docker compose（v2 插件）或 docker-compose 可执行文件。"
+  say "  请升级 Docker Desktop，或安装 docker-compose 后重试。"
+  exit 1
+fi
+say "▶ 使用 Compose 命令：${COMPOSE_CMD[*]}"
+
 # 等待 Docker daemon 就绪：Docker Desktop 启动后引擎要几十秒才可用，
 # 刚启动完立刻运行脚本时 docker info 会误报“守护进程未运行”，
 # 因此这里改为轮询等待（默认最多 90 秒），超时才报错。
@@ -120,10 +135,12 @@ if [ -z "$PUBLIC_URL" ]; then
   # 容器已在运行就不重复 compose up：避免因 .env 变化重建容器、清空日志，
   # 也避免白等一轮新的快速隧道地址。
   if ! tunnel_is_running; then
-    # 先写含授权码的 .env（compose 校验 DSH_WEB_AUTH_TOKEN 必需），隧道先起、
-    # web 后起，order 由本脚本控制。
+    # 先写含授权码的 .env（docker compose v2 从 compose 文件目录自动读取），
+    # 隧道先起、web 后起，order 由本脚本控制。env 变量同时显式内联传入：
+    # docker-compose v1 的 .env 按“当前工作目录”查找，从仓库根目录调用时
+    # 读不到 my-custom/.env，不内联会得到空 DSH_WEB_AUTH_TOKEN。
     printf 'DSH_WEB_AUTH_TOKEN=%s\nDSH_TRUSTED_HOST=\n' "$AUTH_TOKEN" > "$ENV_FILE"
-    docker compose -f "$COMPOSE_FILE" up -d cloudflared
+    DSH_WEB_AUTH_TOKEN="$AUTH_TOKEN" DSH_TRUSTED_HOST="" "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" up -d cloudflared
   fi
   for _ in $(seq 1 60); do
     PUBLIC_URL="$(tunnel_url_from_logs)"
@@ -159,7 +176,22 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$WEB"; then
 else
   say "▶ 用 docker-compose 启动 ..."
 fi
-docker compose -f "$COMPOSE_FILE" up -d dsh-web
+# 旧版 Docker（走到 docker-compose v1 回退说明没有 compose v2）的默认 seccomp
+# 会拦截 clone3，现代 glibc 镜像里 node/pnpm 无法创建线程（uv_thread_create
+# assertion / pthread_create EPERM）。镜像缺失时用 --security-opt seccomp=unconfined
+# 手动构建；compose 发现镜像已存在就不再重复 build。现代 Docker 走 docker compose
+# 分支，不触发这里。
+if [ "${COMPOSE_CMD[0]}" = "docker-compose" ] && ! docker image inspect "$WEB:local" >/dev/null 2>&1; then
+  say "▶ 构建镜像（旧版 Docker 尝试 seccomp=unconfined，需要几分钟）..."
+  if ! docker build --security-opt seccomp=unconfined -f "$SCRIPT_DIR/Dockerfile" -t "$WEB:local" "$SCRIPT_DIR/.."; then
+    say "⚠ seccomp=unconfined 构建不可用（本机 daemon 不支持 build security options）"
+    say "  回退到默认 docker build；若 Docker 过旧（<20.10）且镜像基于现代 glibc，"
+    say "  node/pnpm 会因 clone3 被 seccomp 拦截而崩溃（uv_thread_create / EPERM）。"
+    say "  请升级 Docker Desktop，或在 my-custom/README.md 查看本机适配说明。"
+    docker build -f "$SCRIPT_DIR/Dockerfile" -t "$WEB:local" "$SCRIPT_DIR/.."
+  fi
+fi
+DSH_WEB_AUTH_TOKEN="$AUTH_TOKEN" DSH_TRUSTED_HOST="$TUNNEL_HOST" "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" up -d dsh-web
 
 # ── 5. 等待 web 就绪 ────────────────────────────────────────
 for _ in $(seq 1 60); do

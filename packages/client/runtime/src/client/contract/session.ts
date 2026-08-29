@@ -65,6 +65,13 @@ export interface ISession {
    */
   cancel(): Promise<RpcResult<{ accepted: true }>>
   /**
+   * Rewind the session by one exchange: the Host voids the turn containing
+   * the last human prompt and streams the marker back; the local window
+   * drops the voided tail. Rejects while running or with nothing to rewind.
+   * @returns the void boundary and marker seq, or the business error.
+   */
+  rewind(): Promise<RpcResult<{ throughSeq: number; seq: number }>>
+  /**
    * Rename this session (explicit user title; pins it against automatic
    * regeneration).
    * @param title - raw title text (the host normalizes acceptance).

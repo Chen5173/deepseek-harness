@@ -82,6 +82,8 @@ export interface RpcErrorDetailsMap {
   'model-discovery-failed': { settingsNs: string; baseURL?: string }
   'title-invalid': { sessionId: SessionId }
   'fork-unavailable': { sessionId: SessionId }
+  /** Rewind refused: running session, subagent-backed, or no visible exchange to void. */
+  'rewind-unavailable': { sessionId: SessionId }
   'subagent-parent-unavailable': { parentSessionId: SessionId }
   'subagent-not-found': { parentSessionId: SessionId; childSessionId: SessionId }
   'subagent-catalog-diagnostic': {

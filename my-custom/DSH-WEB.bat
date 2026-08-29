@@ -1,7 +1,7 @@
 @echo off
 set CUR_DIR=%~dp0%
 cd %CUR_DIR%..
-node apps/cli/lib/bin.js web %*
+node apps/cli/lib/bin.js web --no-open --host 0.0.0.0 %*
 if errorlevel 1 (
 	pause
 )

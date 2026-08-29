@@ -93,6 +93,8 @@ interface BenchOptions {
   commandMenuOpen?: boolean
   busyEnter?: 'queue' | 'steer'
   toggleCommandMenu?: (selection: { start: number; end: number }) => void
+  /** Double-Escape rewind spy. */
+  rewind?: () => void
 }
 
 /** One pending queue row (the runtime snapshot shape, as the dock tests build it). */
@@ -186,6 +188,7 @@ function bench(over?: BenchOptions) {
     useLexicon: bindSnapshotSelector(shell.lexicon),
     useMenuLauncher: bindSnapshotSelector(menuLauncher),
     stop,
+    rewind: over?.rewind,
     command: over?.command ?? (() => Promise.resolve(true)),
     // Mirrors the real lookup chain (conversation namespace, then common).
     t: over?.t ?? makeTranslate(zh, commonZh),
@@ -208,7 +211,7 @@ function bench(over?: BenchOptions) {
   )!
   const interruptButton = view.container.querySelector<HTMLButtonElement>('button[aria-label="停止生成"]')
   return {
-    view, textarea, button, interruptButton, props, sink, shell, wiring: shell, session, stop, removeImage, slotCalls,
+    view, textarea, button, interruptButton, props, sink, shell, wiring: shell, session, stop, rewind: over?.rewind, removeImage, slotCalls,
     menuLauncher,
     steerQueue: over?.steerQueue,
   }
@@ -1641,5 +1644,84 @@ describe('command launcher chrome and control seats', () => {
     cleanup()
     const live = bench({ running: true, permissions })
     expect((live.view.getByLabelText(/^访问模式/) as HTMLButtonElement).disabled).toBe(false)
+  })
+})
+
+describe('escape vocabulary', () => {
+  const esc = (el: HTMLTextAreaElement): void => { fireEvent.keyDown(el, { key: 'Escape' }) }
+
+  it('Escape interrupts a running ordinary session through the stop face', () => {
+    const { textarea, stop, rewind } = bench({ running: true, rewind: vi.fn() })
+    esc(textarea)
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(rewind).not.toHaveBeenCalled()
+  })
+
+  it('a running one-shot subagent still stops on Escape', () => {
+    const { textarea, stop } = bench({
+      running: true,
+      subagent: { address: { mode: 'one-shot', parentSessionId: SID, childSessionId: 'c' as SessionId }, parentAvailable: true },
+    })
+    esc(textarea)
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('idle Escape arms the double-press and announces the hint', () => {
+    const rewind = vi.fn()
+    const { view, textarea } = bench({ rewind })
+    esc(textarea)
+    expect(rewind).not.toHaveBeenCalled()
+    expect(view.getByText('再次按 Esc 撤回上一轮对话')).toBeTruthy()
+  })
+
+  it('a second Escape within the window rewinds the last exchange', () => {
+    const rewind = vi.fn()
+    const { textarea } = bench({ rewind })
+    esc(textarea)
+    esc(textarea)
+    expect(rewind).toHaveBeenCalledTimes(1)
+  })
+
+  it('a second Escape after the window re-arms instead of rewinding', () => {
+    const rewind = vi.fn()
+    const { textarea } = bench({ rewind })
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0)
+    onTestFinished(() => { now.mockRestore() })
+    esc(textarea)
+    now.mockReturnValue(900)
+    esc(textarea)
+    expect(rewind).not.toHaveBeenCalled()
+    now.mockReturnValue(1500)
+    esc(textarea)
+    expect(rewind).toHaveBeenCalledTimes(1)
+  })
+
+  it('a non-empty idle draft never rewinds', () => {
+    const rewind = vi.fn()
+    const { textarea } = bench({ draft: '保留中的草稿', rewind })
+    esc(textarea)
+    esc(textarea)
+    expect(rewind).not.toHaveBeenCalled()
+  })
+
+  it('Escape during IME composition never interrupts or rewinds', () => {
+    const stop = vi.fn()
+    const rewind = vi.fn()
+    const { textarea } = bench({ rewind })
+    fireEvent.keyDown(textarea, { key: 'Escape', keyCode: 229 })
+    fireEvent.keyDown(textarea, { key: 'Escape', keyCode: 229 })
+    expect(stop).not.toHaveBeenCalled()
+    expect(rewind).not.toHaveBeenCalled()
+    // A non-composing press afterwards still arms normally.
+    esc(textarea)
+  })
+
+  it('held Escape (repeat) neither interrupts nor rewinds', () => {
+    const stop = vi.fn()
+    const rewind = vi.fn()
+    const { textarea } = bench({ running: true, rewind })
+    fireEvent.keyDown(textarea, { key: 'Escape', repeat: true })
+    expect(stop).not.toHaveBeenCalled()
+    expect(rewind).not.toHaveBeenCalled()
   })
 })

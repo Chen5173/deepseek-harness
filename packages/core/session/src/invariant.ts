@@ -147,6 +147,14 @@ function validateEvent(
     case 'session/end-seed':
       // Unconstrained: an unbalanced seed legally puts it inside an open turn.
       break
+    case 'session/rewind': {
+      // A rewind marker is a between-turns lifecycle event: it voids complete
+      // turns only, so replay must never meet one inside an open turn or step.
+      if (trace.openTurn !== null || trace.openStep !== null) {
+        fail('session/rewind appended inside an open turn')
+      }
+      break
+    }
     case 'todo/write':
     case 'request/header':
     case 'request/context': {

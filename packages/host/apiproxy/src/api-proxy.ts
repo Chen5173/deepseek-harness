@@ -17,7 +17,7 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage, freezeMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
-import { isAppendSurfaceEvent, isJsonValue } from '@deepseek-ai/dsh-session'
+import { isAppendSurfaceEvent, isJsonValue, withoutVoidedEvents } from '@deepseek-ai/dsh-session'
 import type { JsonValue, Session, SessionEvent, SessionEventMap, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
@@ -1523,11 +1523,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       return {
         id: attached.id,
         header: attached.header,
-        events: [...attached.events],
+        // Rewound ranges are invisible to every read: fork seeds, rewind
+        // boundary derivation, and transcript cuts all see the same history
+        // the model sees.
+        events: withoutVoidedEvents(attached.events),
       }
     }
     const inspected = await inspectServable(sessionId)
-    return { id: inspected.meta.id, header: inspected.meta, events: inspected.events }
+    return { id: inspected.meta.id, header: inspected.meta, events: withoutVoidedEvents(inspected.events) }
   }
 
   /** Resolve the Workspace inherited by a fork without making ordinary loose lineage grouped. */
@@ -1587,10 +1590,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     includeProjections: boolean,
   ): { events: SessionEvent[]; projections?: SessionProjectionsBlock } {
     if (source.kind === 'detached') {
-      const projections = includeProjections ? detachedProjectionsFor(ctx, source.events) : undefined
-      return { events: source.events, ...projections === undefined ? {} : { projections } }
+      const events = withoutVoidedEvents(source.events)
+      const projections = includeProjections ? detachedProjectionsFor(ctx, events) : undefined
+      return { events, ...projections === undefined ? {} : { projections } }
     }
-    const events = [...source.session.events]
+    const events = withoutVoidedEvents(source.session.events)
     const projections = includeProjections ? projectionsFor(ctx, source.session) : undefined
     return { events, ...projections === undefined ? {} : { projections } }
   }
@@ -2650,6 +2654,72 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }
         agent.cancel({ kind: 'user' }, { keepInbox: true })
         return Promise.resolve(ok(request, { accepted: true as const }))
+      },
+
+      async rewind(request) {
+        const { sessionId } = request.payload
+        const attached = ctx.sessions.get(sessionId)
+        if (attached === undefined) {
+          return err(request, {
+            code: 'session-not-found',
+            message: `session "${sessionId}" not found (not attached)`,
+            details: { sessionId },
+          })
+        }
+        const agent = ctx.agents.get(sessionId)
+        if (hasSubagentOwner(attached, agent)) {
+          return err(request, subagentOwnershipError(sessionId))
+        }
+        if (agent !== undefined && agent.status === 'running') {
+          return err(request, {
+            code: 'rewind-unavailable',
+            message: `session "${sessionId}" is running; interrupt it before rewinding`,
+            details: { sessionId },
+          })
+        }
+        // The boundary derivation reads the VISIBLE history (post previous
+        // rewinds), so a second rewind voids only the new exchange instead of
+        // everything back to the first cut.
+        const visible = withoutVoidedEvents(attached.events)
+        let lastCompletedEnd = -1
+        let lastHumanSeq = -1
+        let lastHumanEndBefore = -1
+        for (const event of visible) {
+          if (event.type === 'turn/end') {
+            lastCompletedEnd = event.seq
+          } else if (event.type === 'user/message' && event.data.source.kind === 'user') {
+            lastHumanSeq = event.seq
+            lastHumanEndBefore = lastCompletedEnd
+          }
+        }
+        if (lastHumanSeq === -1) {
+          return err(request, {
+            code: 'rewind-unavailable',
+            message: `session "${sessionId}" has no visible human prompt to rewind`,
+            details: { sessionId },
+          })
+        }
+        // Idle means the turn containing the last human prompt is closed: its
+        // end has been seen after the prompt. An open tail would strand the cut
+        // inside a turn the driver still owns (the core rejects it anyway).
+        if (lastCompletedEnd < lastHumanSeq) {
+          return err(request, {
+            code: 'rewind-unavailable',
+            message: `session "${sessionId}" has no completed turn to rewind to`,
+            details: { sessionId },
+          })
+        }
+        try {
+          const marker = attached.rewind(lastHumanEndBefore)
+          await ctx.sessions.flush(attached)
+          return ok(request, { throughSeq: lastHumanEndBefore, seq: marker.seq })
+        } catch (error: unknown) {
+          return err(request, {
+            code: 'rewind-unavailable',
+            message: `failed to rewind session "${sessionId}": ${String(error)}`,
+            details: { sessionId },
+          })
+        }
       },
     },
 

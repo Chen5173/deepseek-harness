@@ -54,6 +54,13 @@ export interface IConversation {
    */
   cancel(): Promise<void>
   /**
+   * Rewind the scoped session by one exchange (the Host voids the turn
+   * containing the last human prompt; the UI drops the voided tail).
+   * @returns the void boundary and the marker event seq.
+   * @throws on business failure (running, subagent, or nothing to rewind).
+   */
+  rewind(): Promise<{ throughSeq: number; seq: number }>
+  /**
    * Pull one older history page for the scoped session.
    * @returns completion of the page pull.
    */
@@ -301,6 +308,14 @@ export class ConversationController extends Service implements IConversation {
     const session = this.scopedSession('cancel')
     const result = await session.cancel()
     if (!result.ok) throw new Error(`conversation.cancel failed: ${result.error.code}: ${result.error.message}`)
+  }
+
+  /** Rewind the scoped session by one exchange; failures land in promptError and reject, as in cancel. */
+  async rewind(): Promise<{ throughSeq: number; seq: number }> {
+    const session = this.scopedSession('rewind')
+    const result = await session.rewind()
+    if (!result.ok) throw new Error(`conversation.rewind failed: ${result.error.code}: ${result.error.message}`)
+    return result.value
   }
 
   /** Pull one older history page for the scoped Session. */

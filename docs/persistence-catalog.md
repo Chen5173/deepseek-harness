@@ -90,7 +90,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:340`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:347`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:376`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:408`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:353`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:360`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:389`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:421`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -638,6 +638,28 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 
 Source: [`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts)
 
+<a id="sessionrewind--log-only"></a>
+
+#### `session/rewind` — log-only
+
+```ts persistence-catalog
+/**
+ * Logical rewind: voids every event with `throughSeq < seq <= this event's seq`,
+ * except `session/title` events, which survive as conversation-identity
+ * metadata (the conversation keeps its name while its content rewinds).
+ * The raw log stays append-only; the surface fold and every consumer that
+ * understands the vocabulary drop the voided range, and later appends
+ * continue after the marker. `throughSeq` must be `-1` (void everything up
+ * to the marker — the empty session) or the seq of a completed `turn/end`,
+ * and the voided range must not contain an open turn. Appended between turns
+ * only. Repeated rewinds are lawful: consumers apply the LAST marker's rule,
+ * which subsumes earlier ones.
+ */
+'session/rewind': { throughSeq: number }
+```
+
+Source: [`packages/core/session/src/types.ts:349`](../packages/core/session/src/types.ts)
+
 <a id="sessiontitle--log-only"></a>
 
 #### `session/title` — log-only
@@ -652,7 +674,7 @@ Source: [`packages/core/session/src/types.ts:336`](../packages/core/session/src/
 
 Types: [SessionTitleEventData](subsystems/session-title.md)
 
-Source: [`packages/session/session-title/src/index.ts:100`](../packages/session/session-title/src/index.ts)
+Source: [`packages/session/session-title/src/index.ts:102`](../packages/session/session-title/src/index.ts)
 
 <a id="sessiontitle-llm-request--log-only"></a>
 
@@ -665,7 +687,7 @@ Source: [`packages/session/session-title/src/index.ts:100`](../packages/session/
 
 Types: [SessionTitleLlmRequestEventData](subsystems/session-title.md)
 
-Source: [`packages/session/session-title-llm/src/index.ts:43`](../packages/session/session-title-llm/src/index.ts)
+Source: [`packages/session/session-title-llm/src/index.ts:46`](../packages/session/session-title-llm/src/index.ts)
 
 ### `step/*`
 

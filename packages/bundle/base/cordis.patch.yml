@@ -44,17 +44,13 @@
         maxTitleBytes: 80
 
     - id: session-title-llm
-      name: '@deepseek-ai/dsh-session-title-all-prompts-llm'
+      name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
       config:
-        targetWords: 12
-        targetCjkCharacters: 24
-        maxInputBytes: 32768
-        maxOutputTokens: 128
+        targetWords: 5
+        targetCjkCharacters: 10
+        maxInputBytes: 4096
+        maxOutputTokens: 64
         timeoutMs: 60000
-        # Titles don't need deep reasoning: keep the auxiliary call at minimal
-        # effort so a reasoning model cannot burn the output-token cap thinking.
-        reasoningEffort: off
-        includeAssistantReplies: true
 
     - id: user-questions
       name: '@deepseek-ai/dsh-user-questions'

@@ -175,6 +175,14 @@ function histResponse(events: SessionEvent[], hasMore = false) {
   return Promise.resolve(ok({ events: entries(events) as never[], hasMore }))
 }
 
+/** Open a session over fixed history rows, keeping the api so a test can re-serve later fetches. */
+async function openedWithHistory(events: SessionEvent[]) {
+  const handle = makeSession()
+  handle.api.onHistory = () => histResponse(events)
+  await handle.session.open()
+  return handle
+}
+
 describe('open', () => {
   it('keeps a bare Session blank until an authoritative lifecycle signal arrives', () => {
     const { session } = makeSession()
@@ -250,12 +258,7 @@ describe('open', () => {
 
 
 describe('live event path', () => {
-  async function opened(events: SessionEvent[] = plainTurn(0, 0, 'a', 'b')) {
-    const { api, session } = makeSession()
-    api.onHistory = () => histResponse(events)
-    await session.open()
-    return { api, session }
-  }
+  const opened = (events: SessionEvent[] = plainTurn(0, 0, 'a', 'b')) => openedWithHistory(events)
 
   it('drops replayed frames at or below the window tail', async () => {
     const { session } = await opened()
@@ -1012,5 +1015,78 @@ describe('reference stability (the memo contract)', () => {
     expect(resolved.chat.nodes.get(settledKey)).toBe(settledNode)
     feed(ev.assistant(12, 1, '完成'))
     expect(session.getSnapshot()).not.toBe(resolved)
+  })
+})
+
+describe('rewind marker', () => {
+  const opened = (events: SessionEvent[] = []) => openedWithHistory(events)
+
+  function twoTurns(): SessionEvent[] {
+    return [
+      ev.turnStart(0, 1), ev.user(1, '第一问'), ev.assistant(2, 1, '第一答'), ev.turnEnd(3, 1),
+      ev.turnStart(4, 2), ev.user(5, '第二问'), ev.assistant(6, 2, '第二答'), ev.turnEnd(7, 2),
+    ]
+  }
+
+  const marker = (seq: number, throughSeq: number): SessionEvent =>
+    ({ type: 'session/rewind', seq, time: 0, data: { throughSeq } }) as SessionEvent
+
+  /** Message-only chat node seqs (the runtime test definition nodes every event). */
+  const messageSeqs = (session: Session) => chatEvents(session.getSnapshot())
+    .filter(item => item.event.type === 'user/message' || item.event.type === 'assistant/message')
+    .map(item => item.event.seq)
+
+  it('drops the voided tail and the marker, then accepts later appends contiguously', async () => {
+    const { api, session } = await opened(twoTurns())
+    expect(messageSeqs(session)).toEqual([1, 2, 5, 6])
+    // The real host serves filtered history after a rewind; the fixture's
+    // repair-gap refetch must mirror that.
+    api.onHistory = () => histResponse(twoTurns().slice(0, 4))
+    session.handleMuxEnvelope('rw' as never, {
+      type: 'session/event', sessionId: SID, event: marker(8, 3),
+    })
+    await Promise.resolve()
+    expect(messageSeqs(session)).toEqual([1, 2])
+    expect(session.getSnapshot().turnEnds).toEqual(new Map([[1, 3]]))
+    // A live event past the marker looks like a seq gap against the dropped
+    // window: gap repair refetches (filtered) and stitches the new event.
+    session.handleMuxEnvelope('nx' as never, {
+      type: 'session/event', sessionId: SID, event: ev.user(9, '重发的问题'),
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(messageSeqs(session)).toEqual([1, 2, 9])
+  })
+
+  it('voids the whole prefix through -1 and keeps a post-marker stream working', async () => {
+    const { session } = await opened(twoTurns())
+    session.handleMuxEnvelope('rw' as never, {
+      type: 'session/event', sessionId: SID, event: marker(8, -1),
+    })
+    await Promise.resolve()
+    expect(messageSeqs(session)).toEqual([])
+    session.handleMuxEnvelope('nx' as never, {
+      type: 'session/event', sessionId: SID, event: ev.turnStart(9, 1),
+    })
+    session.handleMuxEnvelope('n2' as never, {
+      type: 'session/event', sessionId: SID, event: ev.user(10, '新的开始'),
+    })
+    await Promise.resolve()
+    expect(messageSeqs(session)).toEqual([10])
+  })
+
+  it('rewind() rides the session.rewind RPC and reports business failures in promptError', async () => {
+    const { api, session } = await opened([])
+    const result = await session.rewind()
+    expect(result.ok).toBe(true)
+    expect(api.callsOf('session.rewind')).toHaveLength(1)
+    api.onRewind = () => Promise.resolve(err({
+      code: 'rewind-unavailable',
+      message: 'nothing to rewind',
+      details: { sessionId: SID },
+    }))
+    const failed = await session.rewind()
+    expect(failed.ok).toBe(false)
+    expect(session.getSnapshot().promptError).toMatchObject({ op: 'stop' })
   })
 })

@@ -4,6 +4,11 @@ import { Loader } from '../index.ts'
 import { EntryGroup } from './group.ts'
 import { EntryTree } from './tree.ts'
 import { evaluate, isJsExpr } from './utils.ts'
+const PERF = process.env.DSH_PERF_TRACE === "1"
+function perf(id: string, what: string) {
+  console.error(`[PERF] +${String(Date.now() - PERF_T0).padStart(7)}ms ${what} ${id}`)
+}
+const PERF_T0 = Date.now()
 
 /** Serialized plugin entry options stored in loader config files. */
 export interface EntryOptions {
@@ -257,9 +262,12 @@ export class Entry {
 
   /** Import and start the configured plugin if it is not already running. */
   async init() {
+    if (PERF) perf(this.options.name, 'init:begin')
     try {
       await (this._initTask ??= this._init())
     } finally {
+      if (PERF) perf(this.options.name, 'init:done ')
+
       this._initTask = undefined
       if (!this.loader.getTasks().length) this.ctx.reflect.notify(['loader'])
     }
@@ -293,8 +301,10 @@ export class Entry {
     try {
       await this._patchContext([])
       this.loader.showLog(this, 'apply')
+      if (PERF) perf(this.options.name, 'apply:begin')
       fiber = this.fiber = this.ctx.registry.plugin(plugin, this.options.config, this.getOuterStack)
       await fiber.await()
+      if (PERF) perf(this.options.name, 'apply:done ')
     } catch (error) {
       await this._dispose(fiber)
       throw error

@@ -334,6 +334,19 @@ export interface SessionEventMap {
    * so tolerating concurrent writers needs a signal beyond the log.
    */
   'session/end-seed': Record<string, never>
+  /**
+   * Logical rewind: voids every event with `throughSeq < seq <= this event's seq`,
+   * except `session/title` events, which survive as conversation-identity
+   * metadata (the conversation keeps its name while its content rewinds).
+   * The raw log stays append-only; the surface fold and every consumer that
+   * understands the vocabulary drop the voided range, and later appends
+   * continue after the marker. `throughSeq` must be `-1` (void everything up
+   * to the marker — the empty session) or the seq of a completed `turn/end`,
+   * and the voided range must not contain an open turn. Appended between turns
+   * only. Repeated rewinds are lawful: consumers apply the LAST marker's rule,
+   * which subsumes earlier ones.
+   */
+  'session/rewind': { throughSeq: number }
 }
 
 /** The appendable event-type keys of {@link SessionEventMap}, plugin-merged extensions included. */
