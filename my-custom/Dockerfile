@@ -7,12 +7,15 @@
 # stage, then a slim runtime that runs `dsh web --host 0.0.0.0`.
 
 # ── build stage ────────────────────────────────────────────────────────────
-FROM node:22-slim AS build
+FROM node:22 AS build
 
-# Native modules (node-pty, koffi, esbuild postinstall) need build tools + git.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ git ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+# 用完整版 node:22（基于 buildpack-deps，自带 python3 / make / g++ / gcc / git /
+# ca-certificates），彻底不走 apt-get：
+#   - 本机 Docker 18.06 的 osxfs 读容器内 /usr/share/keyrings 会 EPERM，
+#     apt 拿不到签名公钥；
+#   - 容器内网络存在 MITM（deb.debian.org 被解析成假 IP、HTTPS 证书不可信），
+#     apt-get update 无论官方源还是 aliyun 镜像都无法校验签名。
+# native 模块（node-pty / koffi / esbuild postinstall）依赖这些构建工具。
 
 WORKDIR /app
 RUN corepack enable

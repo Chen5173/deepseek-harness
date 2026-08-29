@@ -26,6 +26,12 @@ const OFFICIAL_PLACEHOLDER_TITLE = 'DSH Local Build'
 /** 基线标记文件的合法内容：一个 7~40 位十六进制提交号。 */
 const BASE_COMMIT_RE = /^[0-9a-f]{7,40}$/iu
 
+/** 显式 build 版本文件的相对仓库根路径（内容形如 1.0.1，X.Y.Z）。 */
+const BUILD_VERSION_FILE = 'my-custom/oh-my-dsh-build.txt'
+
+/** build 版本内容的合法形态：X.Y.Z。 */
+const BUILD_VERSION_RE = /^\d+\.\d+\.\d{1,6}$/
+
 /** 页内脚本源码：单独成文件便于阅读与校验，插件加载时读一次。 */
 const TITLE_FIX_SOURCE = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'title-fix.js'), 'utf8')
 
@@ -50,7 +56,7 @@ function findRepoRoot(start, baseFile, limit) {
 
 /**
  * 执行一条 git 命令并返回去除首尾空白的输出；失败（非 git 仓库、缺 git）返回 undefined。
- * @param args - git 参数数组，例如 ['rev-list', '--count', 'HEAD', '^abc1234']。
+ * @param args - git 参数数组，例如 ['rev-parse', '--short=7', 'HEAD']。
  * @param cwd - 执行目录。
  * @returns 命令标准输出文本，或 undefined。
  */
@@ -63,7 +69,9 @@ function gitText(args, cwd) {
 }
 
 /**
- * 计算 fork 品牌事实：release 取仓库根 package.json，build 取自增提交计数。
+ * 计算 fork 品牌事实：release 取仓库根 package.json，build 读显式版本文件
+ * my-custom/oh-my-dsh-build.txt（不再按 commit 数推导——commit 不改变版本，
+ * 只有发版/push 前跑 bump-build 脚本才 patch +1）。
  * 基线标记缺失或格式不合法即判定「不是 fork 检出」，返回 undefined 让调用方静默跳过。
  * @param root - 仓库根绝对路径。
  * @param baseFile - 基线标记文件相对根路径。
@@ -80,11 +88,15 @@ function readBrand(root, baseFile, brand) {
   } catch {
     // 读不到 package.json 就用占位版本：标题少个 release，远好过首页渲染失败。
   }
-  // build = 自基线以来的提交数映射为 1.0.<count-1>：定制压缩后为 1.0.0，此后每 commit 一次 patch +1。
-  // 允许 DSH_OH_MY_DSH_BUILD 显式覆盖（Docker 构建上下文里没有 .git）。
+  // build 读显式版本文件；允许 DSH_OH_MY_DSH_BUILD 显式覆盖（Docker 构建上下文里没有 .git）。
   const override = process.env.DSH_OH_MY_DSH_BUILD
-  const counted = Number(gitText(['rev-list', '--count', 'HEAD', '^' + base], root))
-  const derived = '1.0.' + String(Math.max(0, Number.isSafeInteger(counted) ? counted - 1 : 0))
+  let derived = '1.0.0'
+  try {
+    const candidate = readFileSync(join(root, BUILD_VERSION_FILE), 'utf8').trim()
+    if (BUILD_VERSION_RE.test(candidate)) derived = candidate
+  } catch {
+    // 读不到版本文件就退回占位 1.0.0：标题少个 build，远好过首页渲染失败。
+  }
   const build = typeof override === 'string' && override !== '' ? override : derived
   const commit = gitText(['rev-parse', '--short=7', 'HEAD'], root) ?? ''
   return { brand, release, build, commit, title: brand + ' ' + release + ' cv.' + build }

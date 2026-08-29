@@ -6,7 +6,7 @@
 
 - **提交信息一律用中文**（以后都如此），**详细说明（body）也要翻译成中文并完整保留**，不要只留一行标题。
 - 提交信息**首行**写版本号，格式：`【个人定制版本号】: cv.<major>.<minor>.<patch>`，空一行后再写中文标题。
-  - 版本号 = `git rev-list --count HEAD ^<my-custom/oh-my-dsh-base.txt 中的基线>`，映射为 `cv.1.0.<count-1>`：定制系列压缩成一次提交后为 `cv.1.0.0`，此后每 commit 一次 patch +1（`cv.1.0.1`、`cv.1.0.2` …；与 Web / CLI 的 `cv.1.0.x` 版本号一致，见定制 5）。
+  - 版本号显式保存在 `my-custom/oh-my-dsh-build.txt`（当前 `1.0.1`，映射为 `cv.1.0.1`）：**提交不再改变版本号**，只在准备发版 / push 时跑 `my-custom/bump-build.sh`（或 `bump-build.bat`）手动 patch +1（与 Web / CLI 的 `cv.1.0.x` 版本号一致，见定制 5）。
   - 示例：
 
     ```
@@ -213,19 +213,21 @@ git commit -m "revert: sidebar session-management customizations"
 
 ### 目的
 
-Web 左上角 / 浏览器标签页 / HTML 标题原本显示官方占位名 `DSH Local Build`。本定制把它改为个人 fork 品牌 `Oh-My-Dsh <release> cv.<major>.<minor>.<patch>`（与 `dsh -V` 完全同格式），版本号 = 自上游基线提交以来本分支的 commit 数映射为 `cv.1.0.<count-1>`：定制系列**压缩成一次提交后为 `cv.1.0.0`**，此后每 commit 一次 patch +1（`cv.1.0.1`、`cv.1.0.2` …），天然记录“我的修改”的进度。
+Web 左上角 / 浏览器标签页 / HTML 标题原本显示官方占位名 `DSH Local Build`。本定制把它改为个人 fork 品牌 `Oh-My-Dsh <release> cv.<major>.<minor>.<patch>`（与 `dsh -V` 完全同格式），版本号显式保存在 `my-custom/oh-my-dsh-build.txt` 并映射为 `cv.1.0.x`：**commit 不再让版本号 +1**，只在准备发版 / push 时手动跑 `bump-build` 脚本 patch +1——版本号跟随发布节奏，而不是 commit 计数。
 
 ### 展示效果
 
 - 左上角品牌名（侧栏，展开态）：`Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0 <7位commit>`（commit 徽标保留）。
 - 浏览器标签页 / HTML `<title>`：`Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0`。
 - CLI：`dsh -V` / `--version` 输出 `Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0`（与 Web 完全一致）。
-- 版本号 = 自基线提交以来本分支的 commit 数，映射为 `cv.1.0.<count-1>`；基线是定制系列起点 `b150a551b8`。
+- 版本号 = `my-custom/oh-my-dsh-build.txt` 中显式保存的 `X.Y.Z`（当前 `1.0.1`），映射为 `cv.1.0.x`；commit 不影响它，发版前用 `bump-build` 脚本手动 +1。
 
 ### 修改点
 
-- `scripts/oh-my-dsh-version.ts`（新增）：计算 build 版本（`git rev-list --count HEAD ^<base>` 得 count，映射为 `1.0.<count-1>`；支持 `DSH_OH_MY_DSH_BUILD` 显式覆盖，值形如 `1.0.0`），并拼出 `Oh-My-Dsh <release> cv.<build>`（release 读仓库根 package.json）。
-- `my-custom/oh-my-dsh-base.txt`（新增）：存上游基线提交 hash（定制系列的起点）。基线变更时改这一个文件即可。
+- `scripts/oh-my-dsh-version.ts`（新增）：读 `my-custom/oh-my-dsh-build.txt` 得 build 版本（`X.Y.Z`；支持 `DSH_OH_MY_DSH_BUILD` 显式覆盖，值形如 `1.0.0`），并拼出 `Oh-My-Dsh <release> cv.<build>`（release 读仓库根 package.json）。
+- `my-custom/oh-my-dsh-base.txt`（新增）：存上游基线提交 hash（定制系列的起点），现在只作「是否 Oh-My-Dsh fork」的判定标记，不再参与版本计算。
+- `my-custom/oh-my-dsh-build.txt`（新增）：显式保存当前 build 版本 `X.Y.Z`（种子 `1.0.1`）。commit 不再改变它；发版 / push 前用 `bump-build` 脚本手动 patch +1。
+- `my-custom/bump-build.sh` / `bump-build.bat`（新增）：发版前手动 bump build 版本（patch +1）并写回 `oh-my-dsh-build.txt`。
 - `scripts/build.ts`：`pnpm run build` 时若未显式设置 `DSH_CLIENT_TITLE`，自动注入 `ohMyDshClientTitle()` 的结果；显式 `DSH_CLIENT_TITLE` 或官方 `--profile official`（`DeepSeek Harness`）仍优先。
 - `packages/client/ui-sidebar/src/client/SidebarRoot.tsx`：品牌回退文案改为读 `process.env.DSH_CLIENT_TITLE ?? 'DSH Local Build'`，个人构建时显示新品牌，无注入环境（测试 / 官方）仍显示旧占位名。
 - `apps/cli/src/bin.ts`：`readVersion()` 检测到 `my-custom/oh-my-dsh-base.txt`（fork 标记）时输出 `Oh-My-Dsh <release> cv.<build>`；无标记的官方/安装构建仍输出纯 release 版本。仓库根相对 artifact 解析，任意 cwd 下结果一致。
@@ -233,22 +235,26 @@ Web 左上角 / 浏览器标签页 / HTML 标题原本显示官方占位名 `DSH
 ### 使用方式
 
 ```sh
-pnpm run build   # 构建后 dsh web 与 dsh -V 均显示 Oh-My-Dsh <release> cv.1.0.0
+# 发版 / push 前手动 bump 一次 build 版本（patch +1，1.0.1 → 1.0.2 …）：
+my-custom/bump-build.sh        # Linux / Git Bash
+my-custom/bump-build.bat       # Windows
+
+pnpm run build   # 构建后 dsh web 与 dsh -V 均显示 Oh-My-Dsh <release> cv.1.0.x
 # 注意：单独跑 `pnpm run build:lib` 不会注入 DSH_CLIENT_TITLE，会把 Web 品牌回退成 DSH Local Build；
 # 改客户端代码后请用完整 `pnpm run build` 重构建以保留品牌。
-# 手动指定版本号（跳过 git 计数）：
-DSH_OH_MY_DSH_BUILD=1.0.0 pnpm run build
+# 手动指定版本号（覆盖文件值）：
+DSH_OH_MY_DSH_BUILD=1.0.1 pnpm run build
 # 手动指定完整标题（完全覆盖）：
-DSH_CLIENT_TITLE='Oh-My-Dsh 0.1.1-rc.2 cv.1.0.0' pnpm run build
+DSH_CLIENT_TITLE='Oh-My-Dsh 0.1.1-rc.2 cv.1.0.1' pnpm run build
 ```
 
-> CLI 的 `-V` 在**运行时**实时取 git 计数（无需每次重新构建）；Web 品牌是**构建时**注入（需 `pnpm run build`）。两者共用同一个 `my-custom/oh-my-dsh-base.txt` 基线。
+> CLI 的 `-V` 在**运行时**实时读 `my-custom/oh-my-dsh-build.txt`（无需每次重新构建）；Web 品牌是**构建时**注入（需 `pnpm run build`）；浏览器标签页标题由插件在运行时读同一文件。三者保持一致；`my-custom/oh-my-dsh-base.txt` 只作「是否 Oh-My-Dsh fork」的判定标记，不再参与版本计算。
 
 ### 回退
 
 ```sh
 git checkout HEAD -- scripts/build.ts packages/client/ui-sidebar/src/client/SidebarRoot.tsx apps/cli/src/bin.ts
-rm scripts/oh-my-dsh-version.ts my-custom/oh-my-dsh-base.txt
+rm scripts/oh-my-dsh-version.ts my-custom/oh-my-dsh-base.txt my-custom/oh-my-dsh-build.txt my-custom/bump-build.sh my-custom/bump-build.bat
 ```
 
 ## 定制 6：对话输入框模型名旁显示供应商
