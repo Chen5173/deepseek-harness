@@ -1,0 +1,1 @@
+node .\apps\cli\lib\bin.js web --no-open

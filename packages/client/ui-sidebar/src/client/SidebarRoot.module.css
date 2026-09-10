@@ -339,11 +339,21 @@
   align-items: center;
 }
 
-.collapsed .settingsArea,
-.collapsed .footerActions {
+.collapsed .settingsArea {
   display: flex;
   justify-content: center;
   width: auto;
+}
+
+/* The rail's 36px content box fits one 36px control, and this slot takes any
+   number of occupants, so the rail stacks them on the 12px rhythm the controls
+   above use. Expanded, the occupants keep sharing the single foot row. */
+.collapsed .footerActions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: auto;
+  row-gap: 12px;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest'
 const css = readFileSync(fileURLToPath(new URL('../src/client/SidebarRoot.module.css', import.meta.url)), 'utf8')
 
 /**
- * Declarations of one exact selector, keyed by property.
+ * Declarations of one exact selector, keyed by property. The selector keeps a
+ * single rule, so the first match is its whole declaration block.
  * @param selector - exact selector text.
  * @returns the normalized declarations, or undefined when absent.
  */
@@ -62,6 +63,18 @@ describe('SidebarRoot.module.css', () => {
     expect(declarations('.collapsed .logoRow')?.get('justify-content')).toBe('flex-start')
     expect(declarations('.collapsed .newSession')?.get('align-self')).toBe('flex-start')
     expect(declarations('.collapsed .newSession')?.get('width')).toBe('36px')
+  })
+
+  it('stacks the foot action list one icon per row in the collapsed rail', () => {
+    // The rail's 36px content box fits one 36px control, and the action list is
+    // a multi-occupant slot, so the rail owns the stacking; expanded, the same
+    // occupants keep sharing the single foot row beside Settings.
+    const rail = declarations('.collapsed .footerActions')
+    expect(rail?.get('flex-direction')).toBe('column')
+    expect(rail?.get('align-items')).toBe('center')
+    expect(rail?.get('row-gap')).toBe('12px')
+    // Expanded, no direction is declared, so the occupants keep the default row.
+    expect(declarations('.footerActions')?.get('flex-direction')).toBeUndefined()
   })
 
   it('keeps the slotted brand row at the full artwork height', () => {
