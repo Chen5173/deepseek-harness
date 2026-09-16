@@ -5,6 +5,9 @@
 # override after the default keeps the in-repo form normalized as text.
 * text=auto eol=lf
 *.cmd text eol=crlf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
 
 *.pdf binary
 
